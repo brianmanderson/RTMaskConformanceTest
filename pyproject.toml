@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtmask-conformance"
+version = "0.1.0"
+description = "Universal conformance test suite for DICOM-RT-to-NIfTI converters: synthetic CT + RTSTRUCT fixtures with analytic ground truth and pass/fail metrics."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Brian Anderson" },
+]
+license = { text = "Apache-2.0" }
+keywords = ["dicom", "rtstruct", "nifti", "radiation-oncology", "conformance", "validation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "pydicom>=3.0",
+    "SimpleITK>=2.4",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "pyyaml>=6",
+    "trimesh>=4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+rtmask-conformance = "rtmask_conformance.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/brianmanderson/RTMaskConformanceTest"
+Issues = "https://github.com/brianmanderson/RTMaskConformanceTest/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rtmask_conformance = ["data/*.yaml", "data/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/rtmask_conformance/tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["src/rtmask_conformance/_vendor"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]

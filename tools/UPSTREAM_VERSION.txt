@@ -1,0 +1,11 @@
+upstream_repo: https://github.com/brianmanderson/Dicom_RT_Images_Csharp
+upstream_path: PythonCode/src/rtmask_validation
+upstream_commit: 8f7a47e115c3557ca7ca824a836b7cb27b95cac3
+synced_on: 2026-05-04
+notes: |
+  Initial vendor for v0.1. Vendored modules cover the 7 closed-planar primitives
+  (sphere, cube, cylinder, ellipsoid, torus, hollow sphere, hollow cylinder), the
+  synthetic reference-CT builder, partial-volume voxelizer, RTSTRUCT writer, and
+  closed-shape metrics (Dice / volume / Surface DSC / Hausdorff / MSD). Excluded:
+  POINT and OPEN_NONPLANAR primitives, point/curve/arc-length metrics, the
+  benchmark harness, public dataset readers.

@@ -1,0 +1,42 @@
+schema_version: 1
+
+# Defaults applied to every ROI unless overridden under `primitives:`.
+defaults:
+  dice: 0.95              # volumetric Dice
+  surface_dice_1mm: 0.95  # Nikolov-style tolerance-bounded surface DSC, tolerance = 1 mm
+  hd95_mm: 2.0            # 95th percentile symmetric Hausdorff (mm)
+  msd_mm: 0.5             # mean surface distance (mm)
+  volume_rel_err: 0.03    # |V_tool - V_ref| / V_ref
+
+# Per-primitive overrides. Keys shallow-merge over `defaults`.
+# Rationale: cube is axis-aligned (near-exact); smooth convex shapes
+# achievable at ~0.97-0.98 by any correct rasterizer; torus has high
+# surface-to-volume ratio so boundary voxels dominate; the two XOR
+# primitives (hollow sphere, straw) require correct multi-contour even-odd
+# fill — tools that mishandle that produce a solid (Dice ~0.6) and
+# should fail loudly, but not because the threshold was too tight.
+primitives:
+  sphere_r40_center:
+    dice: 0.98
+    hd95_mm: 1.5
+  cube_s60_x100_y100:
+    dice: 0.99
+    hd95_mm: 1.0
+  cylinder_r30_h80_x400_y100:
+    dice: 0.97
+    hd95_mm: 1.5
+  ellipsoid_30_50_60_x100_y400:
+    dice: 0.97
+    hd95_mm: 2.0
+  torus_R60_r20_x400_y400:
+    dice: 0.93
+    hd95_mm: 2.5
+    surface_dice_1mm: 0.90
+  hollow_sphere_R40_r20_x256_y100:
+    dice: 0.92
+    hd95_mm: 2.5
+    volume_rel_err: 0.05
+  straw_R40_r20_h120_x256_y400:
+    dice: 0.92
+    hd95_mm: 2.5
+    volume_rel_err: 0.05
