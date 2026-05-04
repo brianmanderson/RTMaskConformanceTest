@@ -14,13 +14,13 @@ from ._vendor.primitives.closed_planar import Cube, Cylinder, Ellipsoid, Sphere,
 from ._vendor.primitives.closed_planar_xor import HollowCylinder, HollowSphere
 
 CONFORMANCE_ROIS: list[str] = [
-    "sphere_r40_center",
-    "cube_s60_x100_y100",
-    "cylinder_r30_h80_x400_y100",
-    "ellipsoid_30_50_60_x100_y400",
-    "torus_R60_r20_x400_y400",
-    "hollow_sphere_R40_r20_x256_y100",
-    "straw_R40_r20_h120_x256_y400",
+    "sphere",
+    "cube",
+    "cylinder",
+    "ellipsoid",
+    "torus",
+    "hollow_sphere",
+    "straw",
 ]
 
 
@@ -34,40 +34,40 @@ def build_conformance_primitives() -> list[AnalyticalPrimitive]:
     """
     return [
         Sphere(
-            name="sphere_r40_center",
+            name="sphere",
             center=(256.0, 256.0, 100.0),
             radius=40.0,
         ),
         Cube(
-            name="cube_s60_x100_y100",
+            name="cube",
             center=(100.5, 100.5, 100.5),
             side_length=60.0,
         ),
         Cylinder(
-            name="cylinder_r30_h80_x400_y100",
+            name="cylinder",
             center=(400.0, 100.0, 100.5),
             radius=30.0,
             height=80.0,
         ),
         Ellipsoid(
-            name="ellipsoid_30_50_60_x100_y400",
+            name="ellipsoid",
             center=(100.0, 400.0, 100.0),
             semi_axes=(30.0, 50.0, 60.0),
         ),
         Torus(
-            name="torus_R60_r20_x400_y400",
+            name="torus",
             center=(400.0, 400.0, 100.0),
             major_radius=60.0,
             minor_radius=20.0,
         ),
         HollowSphere(
-            name="hollow_sphere_R40_r20_x256_y100",
+            name="hollow_sphere",
             center=(256.0, 100.0, 100.0),
             outer_radius=40.0,
             inner_radius=20.0,
         ),
         HollowCylinder(
-            name="straw_R40_r20_h120_x256_y400",
+            name="straw",
             center=(256.0, 400.0, 100.5),
             outer_radius=40.0,
             inner_radius=20.0,

@@ -27,13 +27,17 @@ mismatches, and surfacing them separately is more diagnostic than a low Dice.
 
 The seven ROI filenames are:
 
-- `sphere_r40_center.nii.gz`
-- `cube_s60_x100_y100.nii.gz`
-- `cylinder_r30_h80_x400_y100.nii.gz`
-- `ellipsoid_30_50_60_x100_y400.nii.gz`
-- `torus_R60_r20_x400_y400.nii.gz`
-- `hollow_sphere_R40_r20_x256_y100.nii.gz`
-- `straw_R40_r20_h120_x256_y400.nii.gz`
+- `sphere.nii.gz`
+- `cube.nii.gz`
+- `cylinder.nii.gz`
+- `ellipsoid.nii.gz`
+- `torus.nii.gz`
+- `hollow_sphere.nii.gz`
+- `straw.nii.gz`
+
+The ROI names match the `ROIName` field of each ROI in the RTSTRUCT, so a tool
+that converts RTSTRUCT to per-ROI NIfTI in the obvious way (using `ROIName`
+verbatim as the output filename) will produce these names automatically.
 
 ## Verifying
 

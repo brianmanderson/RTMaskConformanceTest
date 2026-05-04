@@ -16,27 +16,27 @@ defaults:
 # fill — tools that mishandle that produce a solid (Dice ~0.6) and
 # should fail loudly, but not because the threshold was too tight.
 primitives:
-  sphere_r40_center:
+  sphere:
     dice: 0.98
     hd95_mm: 1.5
-  cube_s60_x100_y100:
+  cube:
     dice: 0.99
     hd95_mm: 1.0
-  cylinder_r30_h80_x400_y100:
+  cylinder:
     dice: 0.97
     hd95_mm: 1.5
-  ellipsoid_30_50_60_x100_y400:
+  ellipsoid:
     dice: 0.97
     hd95_mm: 2.0
-  torus_R60_r20_x400_y400:
+  torus:
     dice: 0.93
     hd95_mm: 2.5
     surface_dice_1mm: 0.90
-  hollow_sphere_R40_r20_x256_y100:
+  hollow_sphere:
     dice: 0.92
     hd95_mm: 2.5
     volume_rel_err: 0.05
-  straw_R40_r20_h120_x256_y400:
+  straw:
     dice: 0.92
     hd95_mm: 2.5
     volume_rel_err: 0.05

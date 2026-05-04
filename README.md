@@ -30,8 +30,8 @@ Requires Python ≥ 3.10. Runtime deps: `pydicom`, `SimpleITK`, `numpy`, `scipy`
 rtmask-conformance generate ./fixture
 
 # 2. Run YOUR tool. It must produce one binary NIfTI per ROI:
-#    ./predictions/sphere_r40_center.nii.gz
-#    ./predictions/cube_s60_x100_y100.nii.gz
+#    ./predictions/sphere.nii.gz
+#    ./predictions/cube.nii.gz
 #    ... etc
 #
 #    Inputs to your tool:
@@ -52,15 +52,15 @@ complete contract a tool author must satisfy.
 Seven closed-planar primitives, each centered in a different region of a 512×512×200
 mm volume to avoid overlap:
 
-| ROI name | Shape | Note |
-|---|---|---|
-| `sphere_r40_center` | sphere, r=40 mm | smooth, convex |
-| `cube_s60_x100_y100` | cube, side 60 mm | axis-aligned |
-| `cylinder_r30_h80_x400_y100` | z-axis cylinder | curved + flat caps |
-| `ellipsoid_30_50_60_x100_y400` | ellipsoid | anisotropic |
-| `torus_R60_r20_x400_y400` | z-axis torus | annular cross-sections |
-| `hollow_sphere_R40_r20_x256_y100` | hollow sphere | XOR (multi-contour) |
-| `straw_R40_r20_h120_x256_y400` | hollow cylinder | XOR (multi-contour) |
+| ROI name | Shape | Dimensions | Note |
+|---|---|---|---|
+| `sphere` | sphere | r = 40 mm | smooth, convex |
+| `cube` | cube | side 60 mm | axis-aligned |
+| `cylinder` | z-axis cylinder | r = 30, h = 80 mm | curved + flat caps |
+| `ellipsoid` | ellipsoid | semi-axes (30, 50, 60) mm | anisotropic |
+| `torus` | z-axis torus | R = 60, r = 20 mm | annular cross-sections |
+| `hollow_sphere` | hollow sphere | R = 40, r = 20 mm | XOR (multi-contour) |
+| `straw` | hollow cylinder | R = 40, r = 20, h = 120 mm | XOR (multi-contour) |
 
 Tools that mishandle multi-contour even-odd fill produce a solid (Dice ≈ 0.6) on the
 two XOR primitives and will fail conformance loudly — that is a feature, not a bug.
@@ -94,7 +94,7 @@ defaults:
   msd_mm: 0.5
   volume_rel_err: 0.03
 primitives:
-  torus_R60_r20_x400_y400:
+  torus:
     dice: 0.90        # relax for tools known to struggle with toroidal cross-sections
 ```
 
