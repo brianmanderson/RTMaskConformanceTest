@@ -114,17 +114,19 @@ CLI.
 
 ## Real-world integration examples
 
-Two end-to-end integrations live in sister projects. Each is the recommended
-template for its language: copy the four pieces, adapt the converter call.
+Three end-to-end integrations live in sister projects. Each is the recommended
+template for its language / convention: copy the four pieces, adapt the
+converter call.
 
 | Tool | Language / runtime | Pattern | Recommended for |
 |---|---|---|---|
 | [DicomRTTool](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask) | Python / pip | pyproject extra + pytest + CI job | Python packages with an existing pytest suite |
+| [PyRaDiSe](https://github.com/brianmanderson/pyradise) | Python / pip | same as DicomRTTool, with single-folder staging | Python packages whose API takes a single root directory |
 | [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp) | C# / .NET Framework 4.8 | CI-only: build → headless CLI → verify | Compiled tools with a CLI / headless mode |
 
-The Python integration drives the suite from inside pytest; the C# integration
-is purely CLI-driven inside a GitHub Actions job. The accuracy gate is the
-same — only the surrounding plumbing differs.
+The two Python integrations drive the suite from inside pytest; the C#
+integration is purely CLI-driven inside a GitHub Actions job. The accuracy
+gate is the same — only the surrounding plumbing differs.
 
 ### Python: DicomRTTool
 
@@ -313,6 +315,89 @@ needing a code push.
 - `hollow_sphere` and `straw` are the strongest signal — a ~0.6 Dice on
   these means even-odd / multi-contour XOR is broken, which is a real
   bug in the converter, not a threshold issue.
+
+### Python (variant): PyRaDiSe
+
+[PyRaDiSe](https://github.com/brianmanderson/pyradise) wires the suite in
+the same four-piece shape as DicomRTTool — see those subsections above for
+the canonical walkthrough. The only differences worth calling out are
+PyRaDiSe-specific:
+
+- [pyproject.toml](https://github.com/brianmanderson/pyradise/blob/main/pyproject.toml) — opt-in `conformance` extra
+- [tests/test_conformance.py](https://github.com/brianmanderson/pyradise/blob/main/tests/test_conformance.py) — fixture + per-ROI assertions
+- [tests/conformance.yaml](https://github.com/brianmanderson/pyradise/blob/main/tests/conformance.yaml) — calibrated thresholds
+- [.github/workflows/conformance.yml](https://github.com/brianmanderson/pyradise/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
+
+Three adaptations for PyRaDiSe specifically — these will apply to most
+crawler-style packages:
+
+**1. Single-folder staging.** PyRaDiSe's `SubjectDicomCrawler` walks one
+root and groups by study/series — it can't take a CT folder and an
+RTSTRUCT path as separate arguments. The predictions fixture hard-links
+both into one temp dir before invoking the crawler:
+
+```python
+def _stage_dicom_inputs(rtstruct, image_folder, stage):
+    stage.mkdir(parents=True, exist_ok=True)
+    for src in image_folder.glob("*.dcm"):
+        try:    os.link(src, stage / src.name)
+        except OSError: shutil.copy2(src, stage / src.name)
+    try:    os.link(rtstruct, stage / rtstruct.name)
+    except OSError: shutil.copy2(rtstruct, stage / rtstruct.name)
+```
+
+This pattern generalizes: any tool that takes "a directory with both the
+CT and the RTSTRUCT" needs the same staging step.
+
+**2. Defensive image extraction.** Different PyRaDiSe point releases
+expose the underlying SimpleITK image under different attribute names
+(`get_image_data()` vs `get_image()`). The fixture tries both:
+
+```python
+def _extract_sitk_image(seg):
+    for attr in ("get_image_data", "get_image"):
+        if hasattr(seg, attr):
+            try:
+                v = getattr(seg, attr)()
+                if v is not None: return v
+            except Exception:
+                continue
+    return None
+```
+
+If your tool's API has shifted across releases, the same try-multiple-names
+pattern keeps the test resilient without pinning a specific version.
+
+**3. Python version mismatch handled by pip.** PyRaDiSe declares Python
+≥ 3.8, but `rtmask-conformance` requires ≥ 3.10. The opt-in extra works
+out automatically: pip simply refuses to install the extra on 3.8 / 3.9,
+so users on older interpreters get PyRaDiSe minus the conformance gate
+(the intended behavior — only CI / dev users on 3.10+ run the gate).
+
+The CI workflow also pre-installs `setuptools` to provide the `distutils`
+shim PyRaDiSe imports (removed from stdlib in Python 3.12). Same trick
+applies to any package that hasn't yet migrated off the standard-library
+distutils.
+
+#### Cross-Python rasterizer fingerprinting
+
+PyRaDiSe's first-run cube metrics came in **bit-identical** to DicomRTTool's:
+
+| Metric on `cube` | DicomRTTool | PyRaDiSe |
+|---|---|---|
+| Dice                       | 0.9835 | 0.9835 |
+| Surface DSC @ 1 mm         | 0.999  | 0.999  |
+| HD95 (mm)                  | 1.0    | 1.0    |
+| MSD (mm)                   | 0.33   | 0.33   |
+| Volume relative error      | +3.36% | +3.36% |
+
+Two ostensibly-different Python wrappers around contour-to-mask conversion
+producing identical numbers down to four decimal places means they share
+an underlying rasterizer (in this case, both call into `cv2.fillPoly`).
+That's the suite functioning as a *fingerprint*, not just a pass/fail
+gate — useful for reasoning about provenance when an upstream
+implementation changes, or when validating that a new wrapper hasn't
+introduced incidental drift on top of a shared dependency.
 
 ### C# / .NET Framework: Dicom_RT_Images_Csharp
 
@@ -525,24 +610,26 @@ is documented in the file's header — every override should be.
 
 #### The conformance suite as a cross-implementation diff
 
-What makes this gate worth shipping for both projects is that the same
-fixture surfaces qualitatively different rasterizer behaviors:
+What makes this gate worth shipping across all three projects is that the
+same fixture surfaces qualitatively different rasterizer behaviors:
 
-| Metric on `cube` | DicomRTTool (cv2.fillPoly) | This repo (C# scanline) |
-|---|---|---|
-| Dice                       | 0.9835 | 0.9833 |
-| Surface DSC @ 1 mm         | 0.999  | 1.000  |
-| HD95 (mm)                  | 1.0    | 1.0    |
-| MSD (mm)                   | 0.33   | 0.33   |
-| **Volume relative error**  | **+3.36%** | **0.00%** |
+| Metric on `cube` | DicomRTTool (cv2.fillPoly) | PyRaDiSe (cv2.fillPoly) | This repo (C# scanline) |
+|---|---|---|---|
+| Dice                       | 0.9835 | 0.9835 | 0.9833 |
+| Surface DSC @ 1 mm         | 0.999  | 0.999  | 1.000  |
+| HD95 (mm)                  | 1.0    | 1.0    | 1.0    |
+| MSD (mm)                   | 0.33   | 0.33   | 0.33   |
+| **Volume relative error**  | **+3.36%** | **+3.36%** | **0.00%** |
 
-cv2.fillPoly is biased: it counts ~3.4% more voxels than ground truth. The
-C# scanline gets the volume *exactly* right but disagrees with the GT on
+cv2.fillPoly is biased: it counts ~3.4% more voxels than ground truth, and
+both Python wrappers around it inherit the bias bit-for-bit. The C# scanline
+implementation gets the volume *exactly* right but disagrees with the GT on
 which ~3500 voxels along the boundary belong to the cube — symmetric error,
-not systematic over-fill. Both rasterizers land at near-identical Dice on
-the cube but for completely different reasons. Without the analytic ground
-truth this distinction would be invisible; with it, both implementations
-get a sharper picture of where they actually sit.
+not systematic over-fill. The two cv2 wrappers and the C# scanline land at
+near-identical Dice on the cube but for completely different reasons.
+Without the analytic ground truth this distinction would be invisible; with
+it, all three implementations get a sharper picture of where they actually
+sit, and you can tell at a glance which converters share a rasterizer.
 
 ## Provenance and ground-truth code
 
