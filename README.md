@@ -112,7 +112,21 @@ pytest --pyargs rtmask_conformance.tests
 This produces one parametrized test per ROI with the same pass/fail semantics as the
 CLI.
 
-## Real-world integration example: DicomRTTool
+## Real-world integration examples
+
+Two end-to-end integrations live in sister projects. Each is the recommended
+template for its language: copy the four pieces, adapt the converter call.
+
+| Tool | Language / runtime | Pattern | Recommended for |
+|---|---|---|---|
+| [DicomRTTool](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask) | Python / pip | pyproject extra + pytest + CI job | Python packages with an existing pytest suite |
+| [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp) | C# / .NET Framework 4.8 | CI-only: build → headless CLI → verify | Compiled tools with a CLI / headless mode |
+
+The Python integration drives the suite from inside pytest; the C# integration
+is purely CLI-driven inside a GitHub Actions job. The accuracy gate is the
+same — only the surrounding plumbing differs.
+
+### Python: DicomRTTool
 
 The [DicomRTTool](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask)
 package wires this conformance suite in as a separate CI check. It's the
@@ -125,7 +139,7 @@ call. Live files:
 - [tests/conformance.yaml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/tests/conformance.yaml) — calibrated thresholds
 - [.github/workflows/conformance.yml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
 
-### 1. pyproject.toml — opt-in extra
+#### 1. pyproject.toml — opt-in extra
 
 Keep the conformance dependency out of the default install so users who only
 want the package don't pull `pyyaml`/`trimesh`/etc.:
@@ -139,7 +153,7 @@ conformance = [
 
 Developers and CI install with `pip install -e .[conformance]`.
 
-### 2. tests/test_conformance.py — pytest fixture + assertions
+#### 2. tests/test_conformance.py — pytest fixture + assertions
 
 ```python
 """Conformance test: <YourTool> vs RTMaskConformanceTest analytic ground truth."""
@@ -226,7 +240,7 @@ the converter-driving block inside the `predictions` fixture. Everything
 else (fixture wiring, geometry handling, parametrization, threshold
 resolution) is identical across consumers.
 
-### 3. tests/conformance.yaml — document any threshold relaxations
+#### 3. tests/conformance.yaml — document any threshold relaxations
 
 The first time you run the test, expect one or two ROIs to land just under
 the published defaults — most rasterizers carry a half-voxel boundary bias.
@@ -252,7 +266,7 @@ canonical example: every relaxation is dated, attributed to a specific
 behavior, and ends with the path back to the published default. That way
 the YAML stays self-explanatory as the rasterizer evolves.
 
-### 4. .github/workflows/conformance.yml — separate CI check
+#### 4. .github/workflows/conformance.yml — separate CI check
 
 A standalone job means "Conformance" appears as its own status check on PRs,
 distinct from the existing `Tests` matrix:
@@ -290,7 +304,7 @@ job here is plenty. `workflow_dispatch` lets you re-run manually from
 the Actions tab after an upstream `rtmask-conformance` change without
 needing a code push.
 
-### What you should expect on first run
+#### What you should expect on first run
 
 - `sphere`, `cylinder`, `ellipsoid`, `torus`, `hollow_sphere`, `straw`
   typically pass on defaults if the converter is correct.
@@ -299,6 +313,236 @@ needing a code push.
 - `hollow_sphere` and `straw` are the strongest signal — a ~0.6 Dice on
   these means even-odd / multi-contour XOR is broken, which is a real
   bug in the converter, not a threshold issue.
+
+### C# / .NET Framework: Dicom_RT_Images_Csharp
+
+The [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp)
+project wires the suite in as a CI-only gate. It's the recommended pattern
+when the tool under test is a compiled binary with a CLI or headless mode —
+no Python package wrapping, no test runner needed. The pieces are:
+
+- [conformance.yaml](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/conformance.yaml) at the repo root — calibrated thresholds (same schema as the Python case).
+- [.github/workflows/conformance.yml](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/.github/workflows/conformance.yml) — single workflow that builds the C# project, runs its headless converter against the fixture, and verifies.
+
+The C# tool's headless CLI surface (the bit you'll need an equivalent of in
+your tool) takes the fixture's RTSTRUCT + reference CT folder and writes one
+binary `<roi>.nii.gz` per ROI into an output directory:
+
+```
+Dicom_RT_images_Csharp.exe --headless --forward \
+    --rtstruct PATH \
+    --image-folder PATH \
+    --output-folder PATH
+```
+
+Sourced in [Cli/HeadlessRunner.cs](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/Dicom_RT_images_Csharp/Cli/HeadlessRunner.cs)
+— it returns 0/non-zero and emits per-ROI volume rows on stdout. Matching that
+contract from your tool (whatever it's written in) is the only language-side
+work; everything else is YAML.
+
+#### Workflow walkthrough
+
+The CI job runs the same generate → run-tool → verify chain, just shelling out
+to the C# binary in the middle:
+
+```yaml
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Bump these to pin a different SimpleITK release. Required because the
+# project's .csproj references SimpleITK C# binaries via a relative
+# HintPath, and they're not on NuGet.
+env:
+  SIMPLEITK_VERSION: "2.5.0"
+  SIMPLEITK_ZIP_URL: "https://github.com/SimpleITK/SimpleITK/releases/download/v2.5.0/SimpleITK-2.5.0-CSharp-win64-x64.zip"
+  # Opt the JS actions into the upcoming Node.js 24 runtime ahead of
+  # GitHub's 2026-06-02 forced switch.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  conformance:
+    name: RTSTRUCT->mask conformance (C# headless)
+    runs-on: windows-latest    # WPF / .NET Framework 4.8 means Windows-only.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install rtmask-conformance
+        # `python -m pip` rather than `pip` directly: on Windows runners the
+        # bare pip.exe console script can't be overwritten if pip ever tries
+        # to self-upgrade.
+        run: python -m pip install git+https://github.com/brianmanderson/RTMaskConformanceTest
+
+      - uses: microsoft/setup-msbuild@v2
+      - uses: NuGet/setup-nuget@v2
+
+      - name: Stage SimpleITK C# binaries one level above the repo
+        # The .csproj's HintPath resolves to <repo_parent>/SimpleITK/, so
+        # that's where the DLLs need to land. The release ZIP layout has
+        # an inner directory; flatten it.
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ env.SIMPLEITK_ZIP_URL }}" -OutFile sitk.zip -UseBasicParsing
+          Expand-Archive -Path sitk.zip -DestinationPath sitk-extracted -Force
+          $inner = Get-ChildItem sitk-extracted -Directory | Select-Object -First 1
+          $sourcePath = if ($null -eq $inner) { "sitk-extracted" } else { $inner.FullName }
+          $target = Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) "SimpleITK"
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+          Copy-Item -Path "$sourcePath\*" -Destination $target -Recurse -Force
+
+      - run: nuget restore Dicom_RT_images_Csharp.sln
+
+      - name: Build C# project (Release|x64)
+        # x64 (not AnyCPU) makes the 64-bit native SimpleITK requirement
+        # explicit and matches how the project is built locally.
+        run: msbuild Dicom_RT_images_Csharp.sln /p:Configuration=Release /p:Platform=x64 /m
+
+      - name: Inspect build output
+        # Asserts the three runtime artifacts (managed exe + managed
+        # SimpleITK + native SimpleITK) are present before invoking the
+        # binary. Catches the most common silent failure: a missing
+        # native DLL produces a DllNotFoundException that AttachConsole
+        # can swallow.
+        shell: pwsh
+        run: |
+          $bin = "Dicom_RT_images_Csharp\bin\x64\Release"
+          Get-ChildItem $bin
+          foreach ($f in @("Dicom_RT_images_Csharp.exe", "SimpleITKCSharpManaged.dll", "SimpleITKCSharpNative.dll")) {
+              if (-not (Test-Path (Join-Path $bin $f))) { throw "Missing artifact: $f" }
+          }
+
+      - run: rtmask-conformance generate ./fixture --n-quadrature 2
+
+      - name: Run C# headless forward conversion
+        # AttachConsole(ATTACH_PARENT_PROCESS) inside HeadlessRunner is
+        # unreliable on hosted runners — pwsh's `&` invocation against a
+        # WinExe doesn't always plumb stdout/stderr back to the GitHub
+        # Actions log. Use Start-Process -Wait with explicit redirection
+        # to files, then dump them unconditionally so any failure in the
+        # binary is debuggable from the run log alone.
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "Dicom_RT_images_Csharp\bin\x64\Release\Dicom_RT_images_Csharp.exe").Path
+          New-Item -ItemType Directory -Path predictions -Force | Out-Null
+          $stdoutPath = Join-Path $env:RUNNER_TEMP "csharp.stdout.log"
+          $stderrPath = Join-Path $env:RUNNER_TEMP "csharp.stderr.log"
+          $proc = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru `
+              -ArgumentList @(
+                  "--headless", "--forward",
+                  "--rtstruct",      (Resolve-Path fixture/rtstruct/primitives_planar.dcm).Path,
+                  "--image-folder",  (Resolve-Path fixture/refct).Path,
+                  "--output-folder", (Resolve-Path predictions).Path
+              ) `
+              -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+          Write-Host "----- C# stdout -----"; Get-Content $stdoutPath
+          Write-Host "----- C# stderr -----"; Get-Content $stderrPath
+          if ($proc.ExitCode -ne 0) { throw "Headless conversion failed: $($proc.ExitCode)" }
+
+      - name: Verify
+        run: |
+          rtmask-conformance verify `
+              --predictions ./predictions `
+              --groundtruth ./fixture/groundtruth `
+              --config ./conformance.yaml `
+              --report-json conformance-report.json
+
+      - name: Upload report + artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report
+          path: |
+            conformance-report.json
+            predictions/
+            fixture/groundtruth/
+            fixture/manifest.json
+          retention-days: 30
+```
+
+#### Cross-language pitfalls worth pre-empting
+
+Some of the steps above look like over-engineering until you hit the failure
+mode. The four that bit us during this integration:
+
+1. **`pip install --upgrade pip` fails on Windows runners.** Pip can't
+   overwrite its own running `pip.exe`. Either use `python -m pip install`
+   (the python.exe entry point isn't the locked file) or skip the upgrade —
+   the runner's bundled pip is fresh enough.
+
+2. **`& exe.exe ...` against a WinExe doesn't always surface stdout.** A
+   `WinExe` (any GUI-subsystem .NET executable, even one with a CLI mode) has
+   no console attached by default. `AttachConsole(ATTACH_PARENT_PROCESS)`
+   inside the binary tries to attach to pwsh's console, but the timing and
+   redirection on hosted runners is flaky. Use `Start-Process -Wait`
+   with `-RedirectStandardOutput`/`-RedirectStandardError` to files and
+   dump them with `Get-Content` regardless of exit code. The exit code
+   propagates correctly even when the streams don't.
+
+3. **External native DLLs need explicit staging.** SimpleITK's C# wrapper
+   isn't on NuGet; the binaries ship as a separate ZIP from
+   [github.com/SimpleITK/SimpleITK/releases](https://github.com/SimpleITK/SimpleITK/releases).
+   Match whatever path-relative HintPath your `.csproj` uses (this project
+   uses `..\..\SimpleITK\`, resolving to `<repo_parent>/SimpleITK/`).
+
+4. **`Release|x64`, not AnyCPU**, when you have native deps. The native
+   SimpleITK DLL is x86-64; building AnyCPU on a 64-bit runner technically
+   works because the framework picks 64-bit at runtime, but pinning the
+   platform makes the requirement explicit and unambiguous in the artifact
+   path.
+
+Mention these in your own workflow's comments — future-you will thank past-you.
+
+#### What the run looks like
+
+The verifier produces the same plain-text table the Python case does:
+
+```
+rtmask-conformance verify  config=conformance.yaml  7/7 passed
+
+status ROI                                  dice  sDSC1  HD95mm MSD mm dV%
+-----------------------------------------------------------------------------
+PASS   sphere                              0.9898 1.0000  1.000  0.326   0.75
+PASS   cube                                0.9833 1.0000  1.000  0.333   0.00
+PASS   cylinder                            0.9872 1.0000  1.000  0.304   1.71
+PASS   ellipsoid                           0.9912 1.0000  1.000  0.284   0.84
+PASS   torus                               0.9850 1.0000  1.000  0.350   1.63
+PASS   hollow_sphere                       0.9857 1.0000  1.000  0.323   0.99
+PASS   straw                               0.9821 1.0000  1.000  0.339   1.88
+```
+
+The cube's relaxation in [conformance.yaml](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/conformance.yaml)
+is documented in the file's header — every override should be.
+
+#### The conformance suite as a cross-implementation diff
+
+What makes this gate worth shipping for both projects is that the same
+fixture surfaces qualitatively different rasterizer behaviors:
+
+| Metric on `cube` | DicomRTTool (cv2.fillPoly) | This repo (C# scanline) |
+|---|---|---|
+| Dice                       | 0.9835 | 0.9833 |
+| Surface DSC @ 1 mm         | 0.999  | 1.000  |
+| HD95 (mm)                  | 1.0    | 1.0    |
+| MSD (mm)                   | 0.33   | 0.33   |
+| **Volume relative error**  | **+3.36%** | **0.00%** |
+
+cv2.fillPoly is biased: it counts ~3.4% more voxels than ground truth. The
+C# scanline gets the volume *exactly* right but disagrees with the GT on
+which ~3500 voxels along the boundary belong to the cube — symmetric error,
+not systematic over-fill. Both rasterizers land at near-identical Dice on
+the cube but for completely different reasons. Without the analytic ground
+truth this distinction would be invisible; with it, both implementations
+get a sharper picture of where they actually sit.
 
 ## Provenance and ground-truth code
 
