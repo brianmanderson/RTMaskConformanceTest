@@ -112,6 +112,22 @@ pytest --pyargs rtmask_conformance.tests
 This produces one parametrized test per ROI with the same pass/fail semantics as the
 CLI.
 
+## How the metrics themselves are validated
+
+Every Dice, surface-DSC, HD95, and volume-error number this suite reports
+ultimately comes from three vendored functions in
+[`_vendor/metrics.py`](src/rtmask_conformance/_vendor/metrics.py). To make sure
+those don't silently drift, each function is pinned against hand-computable
+expected values on synthetic numpy arrays — and a [Metric drift
+gate](.github/workflows/ci.yml) runs them on every CI build before the slower
+end-to-end tests start.
+
+[**docs/VALIDATION.md**](docs/VALIDATION.md) walks through the cases with
+figures: cube-overlap configurations with analytical Dice (1.0, 0.5, 0.25,
+0.222…); HD95 tracking voxel shift × spacing exactly; surface-DSC saturating
+at the tolerance threshold; and the end-to-end perturbation tests on the
+seven shipped primitives.
+
 ## Use as a library / plugin evaluator
 
 For tools that already hold prediction and ground-truth masks in memory — or that
