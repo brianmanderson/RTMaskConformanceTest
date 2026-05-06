@@ -32,6 +32,16 @@ jobs:
       - name: Lint
         run: ruff check src
 
+      # Fast metric-math + plugin-API tests. These pin hand-computed Dice /
+      # HD95 / surface-DSC values against small synthetic arrays, so any
+      # silent change in the underlying metric implementations (sign flip,
+      # spacing-axis swap, dtype regression) trips here before the slower
+      # e2e gates even start. Splitting them out gives a clearly-named
+      # status line in the run log; `pytest -v` below still re-runs them
+      # as part of the full suite.
+      - name: Metric drift gate (unit tests)
+        run: pytest src/rtmask_conformance/tests/test_metric_math.py src/rtmask_conformance/tests/test_evaluator_api.py -v
+
       - name: Run tests
         run: pytest -v
 

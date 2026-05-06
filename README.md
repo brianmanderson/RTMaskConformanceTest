@@ -112,6 +112,80 @@ pytest --pyargs rtmask_conformance.tests
 This produces one parametrized test per ROI with the same pass/fail semantics as the
 CLI.
 
+## Use as a library / plugin evaluator
+
+For tools that already hold prediction and ground-truth masks in memory — or that
+score data unrelated to the seven shipped ROIs — the package exposes two
+format-flexible entry points. Either argument may be a `numpy.ndarray`, a path
+to a NIfTI file, or a `SimpleITK.Image`, and the two arguments may differ in form:
+
+```python
+from rtmask_conformance import evaluate_masks, evaluate_masks_with_thresholds
+
+# 1. Raw metrics — no thresholds, no notion of "ROI". Just the numbers.
+metrics = evaluate_masks(prediction, ground_truth, spacing_xyz=(1.0, 1.0, 1.0))
+print(metrics.dice, metrics.surface_dice, metrics.hd95_mm,
+      metrics.msd_mm, metrics.volume_rel_err)
+
+# 2. Graded result — apply thresholds, get a ResultRecord with PASS/FAIL.
+record = evaluate_masks_with_thresholds(
+    prediction, ground_truth,
+    spacing_xyz=(1.0, 1.0, 1.0),
+    thresholds={"dice": 0.9, "hd95_mm": 2.0},   # partial dict OK; missing keys
+                                                 # fall back to shipped defaults
+)
+print(record.status.value, record.violations)
+```
+
+### Input forms
+
+`prediction` and `ground_truth` each accept:
+
+| Form | Spacing source |
+|---|---|
+| `numpy.ndarray` (Z, Y, X) | `spacing_xyz=` argument is **required** |
+| `pathlib.Path` / `str` (NIfTI file) | inferred from the file's header |
+| `SimpleITK.Image` | inferred from `.GetSpacing()` |
+
+When both inputs carry geometry, an `(origin, spacing, size, direction)` precheck
+runs first and any disagreement raises `GeometryMismatchError` (or returns a
+`ResultRecord` with `Status.GEOMETRY_MISMATCH` from the thresholded variant).
+Pass `check_geometry=False` to score arbitrary array pairs.
+
+### Threshold resolution (thresholded variant)
+
+`evaluate_masks_with_thresholds` resolves thresholds in priority order:
+
+1. `thresholds=` — a `Thresholds` instance (used as-is) or a `dict` (shallow-merged
+   over `config.defaults`).
+2. `roi="<one of CONFORMANCE_ROIS>"` — looks up per-ROI thresholds from the shipped
+   YAML.
+3. Fallback to the shipped `defaults` block when `roi` is unknown / unspecified.
+
+### What you get back
+
+`evaluate_masks` returns a `MaskMetrics` dataclass:
+
+```python
+MaskMetrics(
+    dice,                       # always populated
+    surface_dice,               # None if both masks empty contour-wise
+    hd95_mm,                    # None if either mask empty
+    msd_mm,                     # None if either mask empty
+    volume_rel_err,             # None if reference is empty
+    volume_abs_err_mm3,
+    tool_volume_mm3,
+    reference_volume_mm3,
+    surface_dsc_tolerance_mm,   # echoes the tolerance used
+    spacing_xyz,                # echoes the spacing used
+)
+```
+
+`evaluate_masks_with_thresholds` returns a `ResultRecord` with `.status`,
+`.metrics`, `.thresholds`, `.violations`, and (on geometry failure)
+`.geometry_diagnostic` — the same dataclass `evaluate_one` returns, so any code
+that already consumes verify reports works unchanged.
+
 ## Real-world integration examples
 
 Three end-to-end integrations live in sister projects. Each is the recommended
