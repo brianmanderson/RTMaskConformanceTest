@@ -19,6 +19,7 @@ from pathlib import Path
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3d projection)
 from scipy.ndimage import binary_erosion
 
 from rtmask_conformance._vendor.metrics import (
@@ -55,53 +56,93 @@ def sphere(shape: tuple[int, int, int], center: tuple[int, int, int], radius: fl
 
 
 def fig_cube_overlap_cases() -> Path:
-    """Six cube-on-cube cases drawn as a 2D cross-section, each annotated with
+    """Six cube-on-cube cases rendered as 3D voxel grids, each annotated with
     the analytical Dice and the value measured by ``binary_dsc``.
 
-    Cross-sections are taken at the middle z-slice; each case occupies one
-    panel in a 2×3 grid.
+    A and B are drawn as semi-transparent voxels (so the geometry of each is
+    visible through the other), and their intersection is rendered solid /
+    opaque — visually mirroring how Dice scores the overlap.
     """
     cases = [
-        ("Identity", "A=B (10³)", lambda: (cube((20, 20, 20), (5, 5, 5), 10), cube((20, 20, 20), (5, 5, 5), 10)), 1.0),
-        ("Half overlap", "shift +5 along x", lambda: (cube((20, 20, 20), (5, 5, 0), 10), cube((20, 20, 20), (5, 5, 5), 10)), 0.5),
-        ("Quarter overlap", "shift +5 along z and x", lambda: (cube((20, 20, 20), (0, 5, 0), 10), cube((20, 20, 20), (5, 5, 5), 10)), 0.25),
-        ("Subset", "5³ centred in 10³", lambda: (cube((20, 20, 20), (5, 5, 5), 10), cube((20, 20, 20), (7, 7, 7), 5)), 250.0 / 1125.0),
-        ("Disjoint", "no overlap", lambda: (cube((20, 20, 20), (0, 0, 0), 5), cube((20, 20, 20), (15, 15, 15), 5)), 0.0),
-        ("One empty", "A=10³, B=∅", lambda: (cube((20, 20, 20), (5, 5, 5), 10), np.zeros((20, 20, 20), np.uint8)), 0.0),
+        ("Identity", "A=B (10³)",
+         lambda: (cube((16, 16, 16), (3, 3, 3), 10), cube((16, 16, 16), (3, 3, 3), 10)),
+         1.0),
+        ("Half overlap", "shift +5 along x",
+         lambda: (cube((16, 16, 21), (3, 3, 1), 10), cube((16, 16, 21), (3, 3, 6), 10)),
+         0.5),
+        ("Quarter overlap", "shift +5 along z and x",
+         lambda: (cube((21, 16, 21), (1, 3, 1), 10), cube((21, 16, 21), (6, 3, 6), 10)),
+         0.25),
+        ("Subset", "5³ centred in 10³",
+         lambda: (cube((16, 16, 16), (3, 3, 3), 10), cube((16, 16, 16), (5, 5, 5), 5)),
+         250.0 / 1125.0),
+        ("Disjoint", "no overlap",
+         lambda: (cube((16, 16, 16), (1, 1, 1), 5), cube((16, 16, 16), (10, 10, 10), 5)),
+         0.0),
+        ("One empty", "A=10³, B=∅",
+         lambda: (cube((16, 16, 16), (3, 3, 3), 10), np.zeros((16, 16, 16), np.uint8)),
+         0.0),
     ]
 
-    fig, axes = plt.subplots(2, 3, figsize=(12, 9))
-    fig.suptitle("Unit-test Dice cases — analytical vs measured", fontsize=14)
+    fig = plt.figure(figsize=(15, 10))
+    fig.suptitle("Unit-test Dice cases — analytical vs measured", fontsize=15, y=0.98)
 
-    for ax, (title, desc, build, expected) in zip(axes.flat, cases, strict=True):
+    a_color = (0.85, 0.20, 0.20)  # red
+    b_color = (0.20, 0.35, 0.70)  # blue
+    inter_color = (0.45, 0.20, 0.55)  # purple
+    soft_alpha = 0.20  # A-only / B-only — see-through
+    solid_alpha = 1.00  # intersection — opaque
+
+    for idx, (title, desc, build, expected) in enumerate(cases):
+        ax = fig.add_subplot(2, 3, idx + 1, projection="3d")
         a, b = build()
-        slice_idx = a.shape[0] // 2
-        # Render A in red, B in blue, intersection in dark purple.
-        ax.imshow(np.zeros_like(a[slice_idx]), cmap="gray", vmin=0, vmax=1)
-        ax.imshow(np.where(a[slice_idx] > 0, 1, np.nan), cmap="Reds",
-                  alpha=0.55, vmin=0, vmax=1.5)
-        ax.imshow(np.where(b[slice_idx] > 0, 1, np.nan), cmap="Blues",
-                  alpha=0.55, vmin=0, vmax=1.5)
+        a_b = a.astype(bool)
+        b_b = b.astype(bool)
 
-        measured = binary_dsc(a, b)
-        ax.set_title(f"{title}\n{desc}", fontsize=10)
-        ax.text(
-            0.5, -0.12,
-            f"analytical Dice = {expected:.4f}\nmeasured Dice  = {measured:.4f}",
-            transform=ax.transAxes, ha="center", va="top",
-            fontsize=10, family="monospace",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="0.7"),
-        )
+        filled = a_b | b_b
+        # RGBA per voxel — mpl voxels expects shape (*filled.shape, 4).
+        colors = np.zeros(filled.shape + (4,), dtype=float)
+        a_only = a_b & ~b_b
+        b_only = b_b & ~a_b
+        inter = a_b & b_b
+        colors[a_only] = (*a_color, soft_alpha)
+        colors[b_only] = (*b_color, soft_alpha)
+        colors[inter] = (*inter_color, solid_alpha)
+
+        if filled.any():
+            ax.voxels(
+                filled,
+                facecolors=colors,
+                edgecolor=(0.1, 0.1, 0.1, 0.25),
+                linewidth=0.2,
+            )
+
+        # Equal aspect for a true cube look; consistent view across panels.
+        ax.set_box_aspect((filled.shape[2], filled.shape[1], filled.shape[0]))
+        ax.view_init(elev=22, azim=-60)
         ax.set_xticks([])
         ax.set_yticks([])
+        ax.set_zticks([])
+        for spine in ("xaxis", "yaxis", "zaxis"):
+            getattr(ax, spine).pane.set_visible(False)
+        ax.grid(False)
+
+        measured = binary_dsc(a, b)
+        ax.set_title(
+            f"{title} — {desc}\n"
+            f"analytical Dice = {expected:.4f}   measured Dice = {measured:.4f}",
+            fontsize=10,
+        )
 
     legend = [
-        mpatches.Patch(color=plt.cm.Reds(0.6), alpha=0.55, label="A (prediction)"),
-        mpatches.Patch(color=plt.cm.Blues(0.6), alpha=0.55, label="B (ground truth)"),
+        mpatches.Patch(color=a_color, alpha=soft_alpha + 0.15, label="A (prediction, transparent)"),
+        mpatches.Patch(color=b_color, alpha=soft_alpha + 0.15, label="B (ground truth, transparent)"),
+        mpatches.Patch(color=inter_color, alpha=solid_alpha, label="A ∩ B (opaque)"),
     ]
-    fig.legend(handles=legend, loc="lower center", ncol=2, frameon=False,
-               bbox_to_anchor=(0.5, 0.0))
-    fig.subplots_adjust(top=0.92, bottom=0.10, hspace=0.55, wspace=0.15)
+    fig.legend(handles=legend, loc="lower center", ncol=3, frameon=False,
+               bbox_to_anchor=(0.5, 0.01))
+    fig.subplots_adjust(top=0.92, bottom=0.08, hspace=0.30, wspace=0.05,
+                        left=0.02, right=0.98)
 
     path = OUT / "fig1_cube_overlap_cases.png"
     fig.savefig(path, dpi=130, bbox_inches="tight")
