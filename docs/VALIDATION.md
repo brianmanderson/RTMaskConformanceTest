@@ -45,7 +45,7 @@ The arithmetic for each:
 |---|---|---|---|
 | Identity | `A = B` (10³ cube) | 1000 / 2000 | **1.0000** |
 | Half overlap | `B = A` shifted +5 vx along x | 500 / 2000 | **0.5000** |
-| Quarter overlap | `B = A` shifted +5 vx along z and x | 250 / 2000 | **0.2500** |
+| Eighth overlap | `B = A` shifted +5 vx along x, y, and z | 125 / 2000 | **0.1250** |
 | Subset | 5³ cube centred inside `A` (10³) | 125 / 1125 | **0.2222** |
 | Disjoint | two 5³ cubes far apart | 0 / 250 | **0.0000** |
 | One empty | `A = 10³`, `B = ∅` | 0 / 1000 | **0.0000** |

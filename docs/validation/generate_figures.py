@@ -56,78 +56,134 @@ def sphere(shape: tuple[int, int, int], center: tuple[int, int, int], radius: fl
 
 
 def fig_cube_overlap_cases() -> Path:
-    """Six cube-on-cube cases rendered as 3D voxel grids, each annotated with
-    the analytical Dice and the value measured by ``binary_dsc``.
+    """Six cube-on-cube cases rendered with one ``bar3d`` per shape.
 
-    A and B are drawn as semi-transparent voxels (so the geometry of each is
-    visible through the other), and their intersection is rendered solid /
-    opaque — visually mirroring how Dice scores the overlap.
+    Each case has at most three boxes drawn into the same axes:
+      * **A** — semi-transparent (red)
+      * **B** — semi-transparent (blue)
+      * **A ∩ B** — fully opaque (purple)
+
+    Because every shape here is axis-aligned, both A, B, and their
+    intersection are themselves rectangular cuboids — drawn as a single
+    `bar3d` each rather than per-voxel cubes. This keeps the geometry
+    legible: two transparent boxes with an opaque solid where they overlap.
+    Drawn order is A → B → intersection so the opaque solid sits on top.
     """
-    cases = [
-        ("Identity", "A=B (10³)",
-         lambda: (cube((16, 16, 16), (3, 3, 3), 10), cube((16, 16, 16), (3, 3, 3), 10)),
+    Box = tuple[tuple[float, float, float], tuple[float, float, float]]
+    # Coordinates in mm (= voxels at 1 mm spacing). Each box is (origin, size).
+    cases: list[tuple[str, str, Box | None, Box | None, float]] = [
+        ("Identity", "A = B (10³)",
+         ((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+         ((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
          1.0),
-        ("Half overlap", "shift +5 along x",
-         lambda: (cube((16, 16, 21), (3, 3, 1), 10), cube((16, 16, 21), (3, 3, 6), 10)),
+        ("Half overlap", "B shifted +5 along x",
+         ((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+         ((5.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
          0.5),
-        ("Quarter overlap", "shift +5 along z and x",
-         lambda: (cube((21, 16, 21), (1, 3, 1), 10), cube((21, 16, 21), (6, 3, 6), 10)),
-         0.25),
-        ("Subset", "5³ centred in 10³",
-         lambda: (cube((16, 16, 16), (3, 3, 3), 10), cube((16, 16, 16), (5, 5, 5), 5)),
+        ("Eighth overlap", "B shifted +5 along x, y and z",
+         ((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+         ((5.0, 5.0, 5.0), (10.0, 10.0, 10.0)),
+         0.125),
+        ("Subset", "5³ centred inside 10³",
+         ((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+         ((2.5, 2.5, 2.5), (5.0, 5.0, 5.0)),
          250.0 / 1125.0),
         ("Disjoint", "no overlap",
-         lambda: (cube((16, 16, 16), (1, 1, 1), 5), cube((16, 16, 16), (10, 10, 10), 5)),
+         ((0.0, 0.0, 0.0), (5.0, 5.0, 5.0)),
+         ((10.0, 10.0, 10.0), (5.0, 5.0, 5.0)),
          0.0),
-        ("One empty", "A=10³, B=∅",
-         lambda: (cube((16, 16, 16), (3, 3, 3), 10), np.zeros((16, 16, 16), np.uint8)),
+        ("One empty", "A = 10³, B = ∅",
+         ((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+         None,
          0.0),
     ]
 
-    fig = plt.figure(figsize=(15, 10))
-    fig.suptitle("Unit-test Dice cases — analytical vs measured", fontsize=15, y=0.98)
+    a_color = "#cc4444"        # red
+    b_color = "#4466cc"        # blue
+    inter_color = "#6a3a8a"    # purple
+    soft_alpha = 0.25
+    solid_alpha = 1.00
 
-    a_color = (0.85, 0.20, 0.20)  # red
-    b_color = (0.20, 0.35, 0.70)  # blue
-    inter_color = (0.45, 0.20, 0.55)  # purple
-    soft_alpha = 0.20  # A-only / B-only — see-through
-    solid_alpha = 1.00  # intersection — opaque
+    def draw_box(ax, box: Box, color: str, alpha: float) -> None:
+        (ox, oy, oz), (sx, sy, sz) = box
+        ax.bar3d(
+            ox, oy, oz, sx, sy, sz,
+            color=color, alpha=alpha, shade=True,
+            edgecolor="black", linewidth=0.6,
+        )
 
-    for idx, (title, desc, build, expected) in enumerate(cases):
+    def intersect(a: Box | None, b: Box | None) -> Box | None:
+        if a is None or b is None:
+            return None
+        (ax_, ay_, az_), (asx, asy, asz) = a
+        (bx_, by_, bz_), (bsx, bsy, bsz) = b
+        lo = (max(ax_, bx_), max(ay_, by_), max(az_, bz_))
+        hi = (min(ax_ + asx, bx_ + bsx),
+              min(ay_ + asy, by_ + bsy),
+              min(az_ + asz, bz_ + bsz))
+        size = (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+        if min(size) <= 0:
+            return None
+        return (lo, size)
+
+    def measure_dice(a: Box | None, b: Box | None) -> float:
+        """Voxelize both boxes onto a shared integer grid and call binary_dsc.
+
+        Boxes use 1 mm spacing, so 1 voxel = 1 mm³. Expanding to ints is
+        loss-free here — every box edge lands on a whole-mm grid point.
+        """
+        boxes = [x for x in (a, b) if x is not None]
+        if not boxes:
+            return 1.0  # both empty, by convention
+        max_xyz = [int(max(o[i] + s[i] for o, s in boxes)) + 1 for i in range(3)]
+        ag = np.zeros((max_xyz[2], max_xyz[1], max_xyz[0]), dtype=np.uint8)
+        bg = np.zeros_like(ag)
+
+        def fill(grid: np.ndarray, box: Box) -> None:
+            (ox, oy, oz), (sx, sy, sz) = box
+            grid[int(oz):int(oz + sz), int(oy):int(oy + sy), int(ox):int(ox + sx)] = 1
+
+        if a is not None:
+            fill(ag, a)
+        if b is not None:
+            fill(bg, b)
+        return binary_dsc(ag, bg)
+
+    fig = plt.figure(figsize=(15, 9.5))
+    fig.suptitle("Unit-test Dice cases — analytical vs measured", fontsize=15, y=0.985)
+
+    for idx, (title, desc, a_box, b_box, expected) in enumerate(cases):
         ax = fig.add_subplot(2, 3, idx + 1, projection="3d")
-        a, b = build()
-        a_b = a.astype(bool)
-        b_b = b.astype(bool)
 
-        filled = a_b | b_b
-        # RGBA per voxel — mpl voxels expects shape (*filled.shape, 4).
-        colors = np.zeros(filled.shape + (4,), dtype=float)
-        a_only = a_b & ~b_b
-        b_only = b_b & ~a_b
-        inter = a_b & b_b
-        colors[a_only] = (*a_color, soft_alpha)
-        colors[b_only] = (*b_color, soft_alpha)
-        colors[inter] = (*inter_color, solid_alpha)
+        # Draw order matters under transparency: A first, then B, then the
+        # opaque intersection on top. matplotlib's depth sorting on
+        # transparent surfaces is approximate, but for two cuboids + one
+        # opaque interior cuboid this order reads correctly.
+        if a_box is not None:
+            draw_box(ax, a_box, a_color, soft_alpha)
+        if b_box is not None:
+            draw_box(ax, b_box, b_color, soft_alpha)
+        ibox = intersect(a_box, b_box)
+        if ibox is not None:
+            draw_box(ax, ibox, inter_color, solid_alpha)
 
-        if filled.any():
-            ax.voxels(
-                filled,
-                facecolors=colors,
-                edgecolor=(0.1, 0.1, 0.1, 0.25),
-                linewidth=0.2,
-            )
+        # Bound the axes to the union of A and B with a small margin.
+        present = [x for x in (a_box, b_box) if x is not None]
+        if present:
+            lo = min(o[i] for o, _ in present for i in range(3))
+            hi = max(o[i] + s[i] for o, s in present for i in range(3))
+            pad = 0.05 * (hi - lo)
+            ax.set_xlim(lo - pad, hi + pad)
+            ax.set_ylim(lo - pad, hi + pad)
+            ax.set_zlim(lo - pad, hi + pad)
+        ax.set_box_aspect((1, 1, 1))
+        ax.view_init(elev=20, azim=-55)
+        ax.set_xlabel("x (mm)", fontsize=8, labelpad=-6)
+        ax.set_ylabel("y (mm)", fontsize=8, labelpad=-6)
+        ax.set_zlabel("z (mm)", fontsize=8, labelpad=-6)
+        ax.tick_params(axis="both", which="major", labelsize=7, pad=-2)
 
-        # Equal aspect for a true cube look; consistent view across panels.
-        ax.set_box_aspect((filled.shape[2], filled.shape[1], filled.shape[0]))
-        ax.view_init(elev=22, azim=-60)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_zticks([])
-        for spine in ("xaxis", "yaxis", "zaxis"):
-            getattr(ax, spine).pane.set_visible(False)
-        ax.grid(False)
-
-        measured = binary_dsc(a, b)
+        measured = measure_dice(a_box, b_box)
         ax.set_title(
             f"{title} — {desc}\n"
             f"analytical Dice = {expected:.4f}   measured Dice = {measured:.4f}",
@@ -135,14 +191,14 @@ def fig_cube_overlap_cases() -> Path:
         )
 
     legend = [
-        mpatches.Patch(color=a_color, alpha=soft_alpha + 0.15, label="A (prediction, transparent)"),
-        mpatches.Patch(color=b_color, alpha=soft_alpha + 0.15, label="B (ground truth, transparent)"),
+        mpatches.Patch(color=a_color, alpha=soft_alpha + 0.20, label="A (prediction)"),
+        mpatches.Patch(color=b_color, alpha=soft_alpha + 0.20, label="B (ground truth)"),
         mpatches.Patch(color=inter_color, alpha=solid_alpha, label="A ∩ B (opaque)"),
     ]
     fig.legend(handles=legend, loc="lower center", ncol=3, frameon=False,
                bbox_to_anchor=(0.5, 0.01))
     fig.subplots_adjust(top=0.92, bottom=0.08, hspace=0.30, wspace=0.05,
-                        left=0.02, right=0.98)
+                        left=0.03, right=0.97)
 
     path = OUT / "fig1_cube_overlap_cases.png"
     fig.savefig(path, dpi=130, bbox_inches="tight")
@@ -159,7 +215,8 @@ def fig_expected_vs_measured_dice() -> Path:
     cases = [
         ("Identity", 1.0, *(cube((20, 20, 20), (5, 5, 5), 10),) * 2),
         ("Half overlap", 0.5, cube((20, 20, 20), (5, 5, 0), 10), cube((20, 20, 20), (5, 5, 5), 10)),
-        ("Quarter overlap", 0.25, cube((20, 20, 20), (0, 5, 0), 10), cube((20, 20, 20), (5, 5, 5), 10)),
+        ("Eighth overlap", 0.125,
+         cube((20, 20, 20), (0, 0, 0), 10), cube((20, 20, 20), (5, 5, 5), 10)),
         ("Subset 5³⊂10³", 250.0 / 1125.0,
          cube((20, 20, 20), (5, 5, 5), 10), cube((20, 20, 20), (7, 7, 7), 5)),
         ("Disjoint", 0.0,

@@ -111,6 +111,18 @@ def test_dsc_quarter_overlap_two_axis_shift() -> None:
     assert binary_dsc(a, b) == pytest.approx(0.25)
 
 
+def test_dsc_eighth_overlap_three_axis_shift() -> None:
+    """Two 10³ cubes shifted +5 along all three axes.
+
+    A occupies (0:10, 0:10, 0:10); B occupies (5:15, 5:15, 5:15).
+    Intersection on every axis is [5, 10) → 5 voxels per axis.
+    Inter = 5³ = 125.  |A|+|B| = 2000.  Dice = 2·125/2000 = 0.125.
+    """
+    a = _cube((20, 20, 20), (0, 0, 0), 10)
+    b = _cube((20, 20, 20), (5, 5, 5), 10)
+    assert binary_dsc(a, b) == pytest.approx(0.125)
+
+
 def test_dsc_shape_mismatch_raises() -> None:
     a = np.zeros((10, 10, 10), dtype=np.uint8)
     b = np.zeros((10, 10, 11), dtype=np.uint8)
