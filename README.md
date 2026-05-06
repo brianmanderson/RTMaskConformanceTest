@@ -703,7 +703,7 @@ is documented in the file's header — every override should be.
 What makes this gate worth shipping across all three projects is that the
 same fixture surfaces qualitatively different rasterizer behaviors:
 
-| Metric on `cube` | DicomRTTool (cv2.fillPoly) | PyRaDiSe (cv2.fillPoly) | This repo (C# scanline) |
+| Metric on `cube` | DicomRTTool (cv2.fillPoly) | PyRaDiSe (cv2.fillPoly) | DicomRTToolC# (C# scanline) |
 |---|---|---|---|
 | Dice                       | 0.9835 | 0.9835 | 0.9833 |
 | Surface DSC @ 1 mm         | 0.999  | 0.999  | 1.000  |
