@@ -204,7 +204,7 @@ that already consumes verify reports works unchanged.
 
 ## Real-world integration examples
 
-Three end-to-end integrations live in sister projects. Each is the recommended
+Four end-to-end integrations live in sister projects. Each is the recommended
 template for its language / convention: copy the four pieces, adapt the
 converter call.
 
@@ -212,9 +212,10 @@ converter call.
 |---|---|---|---|
 | [DicomRTTool](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask) | Python / pip | pyproject extra + pytest + CI job | Python packages with an existing pytest suite |
 | [PyRaDiSe](https://github.com/brianmanderson/pyradise) | Python / pip | same as DicomRTTool, with single-folder staging | Python packages whose API takes a single root directory |
+| [rt-utils](https://github.com/brianmanderson/rt-utils) | Python / pip | same four-piece pattern; mask returned in-memory rather than written to disk | Python packages whose converter returns numpy arrays |
 | [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp) | C# / .NET Framework 4.8 | CI-only: build → headless CLI → verify | Compiled tools with a CLI / headless mode |
 
-The two Python integrations drive the suite from inside pytest; the C#
+The three Python integrations drive the suite from inside pytest; the C#
 integration is purely CLI-driven inside a GitHub Actions job. The accuracy
 gate is the same — only the surrounding plumbing differs.
 
@@ -489,6 +490,88 @@ gate — useful for reasoning about provenance when an upstream
 implementation changes, or when validating that a new wrapper hasn't
 introduced incidental drift on top of a shared dependency.
 
+### Python (numpy-mask variant): rt-utils
+
+[rt-utils](https://github.com/brianmanderson/rt-utils) wires the suite in
+the same four-piece shape as DicomRTTool. It's the recommended template
+when the converter returns the mask **in memory** as a numpy array rather
+than writing per-ROI NIfTIs to disk. Live files:
+
+- [setup.py](https://github.com/brianmanderson/rt-utils/blob/main/setup.py) — opt-in `conformance` extra
+- [tests/test_conformance.py](https://github.com/brianmanderson/rt-utils/blob/main/tests/test_conformance.py) — fixture + per-ROI assertions
+- [tests/conformance.yaml](https://github.com/brianmanderson/rt-utils/blob/main/tests/conformance.yaml) — calibrated thresholds (cube relaxation only)
+- [.github/workflows/conformance.yml](https://github.com/brianmanderson/rt-utils/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
+
+Two adaptations specific to rt-utils — these will apply to most "give me
+masks back as numpy arrays" libraries:
+
+**1. Predictions fixture writes NIfTIs from numpy + GT geometry.** The
+rt-utils API is `RTStructBuilder.create_from(...).get_roi_mask_by_name(roi)`
+and returns a bare bool numpy array. The verifier needs `<roi>.nii.gz`
+files with origin / spacing / size / direction matching the ground truth,
+so the fixture transposes each mask, wraps it in a `SimpleITK.Image` whose
+geometry is copied verbatim from the GT NIfTI, and writes that to disk:
+
+```python
+for roi in rtstruct.get_roi_names():
+    gt_path = gt_dir / f"{roi}.nii.gz"
+    if not gt_path.is_file():
+        continue
+    mask_yxz = rtstruct.get_roi_mask_by_name(roi)        # bool (Y, X, Z)
+    mask_zyx = np.transpose(mask_yxz, (2, 0, 1)).astype(np.uint8)
+    gt_img = sitk.ReadImage(str(gt_path))
+    pred_img = sitk.GetImageFromArray(mask_zyx)
+    pred_img.CopyInformation(gt_img)                     # geometry inheritance
+    sitk.WriteImage(pred_img, str(pred_dir / f"{roi}.nii.gz"))
+```
+
+Why we copy GT geometry rather than re-deriving it from the CT: the
+fixture's CT slices and the analytic GT NIfTIs share the same geometry
+by construction, so copying the GT's metadata onto the prediction is
+equivalent to deriving it from the CT — and one less place to drift.
+The same `(numpy mask) → (sitk image with GT geometry) → (nii.gz)`
+recipe applies to any in-memory converter.
+
+**2. Empirical axis-order verification, not docstring trust.** rt-utils'
+`image_helper.create_empty_series_mask` allocates the array with
+dimensions ordered `(Columns, Rows, Slices)`, which would imply
+`(X, Y, Z)` and `np.transpose(2, 1, 0)` to reach SimpleITK's `(Z, Y, X)`.
+That ordering is wrong: `cv2.fillPoly` writes into the per-slice mask at
+`[y, x]` indices, leaving the populated array in `(rows=Y, columns=X, slices=Z)`
+order. The conformance gate caught this on first run — `transpose(2, 1, 0)`
+swapped Y and X for primitives whose centroid Y differed from X
+(`cylinder`, `ellipsoid`, `hollow_sphere`, `straw`), giving Dice = 0
+with volumes that otherwise matched the reference within ~1.7%; sphere,
+cube, and torus passed because their centroids happened to be on the
+Y = X diagonal. `np.transpose(2, 0, 1)` lined every primitive up on its
+GT centroid (Dice ≥ 0.985 across the board, with `cube` at the expected
+cv2.fillPoly fingerprint of 0.9835). The
+[upstream docstring on get_roi_mask_by_name](https://github.com/brianmanderson/rt-utils/blob/main/rt_utils/rtstruct.py)
+now spells out the populated `(Y, X, Z)` convention so future consumers
+don't need to re-derive it. This is the analytic-fixture gate functioning
+as a property test on the converter's documentation, not just its
+correctness — exactly the kind of "right answer for the wrong reason"
+case that download-based golden-mask tests can't surface.
+
+#### Cross-Python rasterizer fingerprint, three converters in
+
+rt-utils' first-run cube metrics joined the cv2.fillPoly cluster
+**bit-for-bit**:
+
+| Metric on `cube` | DicomRTTool | PyRaDiSe | rt-utils |
+|---|---|---|---|
+| Dice                       | 0.9835 | 0.9835 | 0.9835 |
+| Surface DSC @ 1 mm         | 0.999  | 0.999  | 0.999  |
+| HD95 (mm)                  | 1.0    | 1.0    | 1.0    |
+| MSD (mm)                   | 0.33   | 0.33   | 0.33   |
+| Volume relative error      | +3.36% | +3.36% | +3.36% |
+
+Three independent Python wrappers sitting on top of `cv2.fillPoly`
+producing identical metrics to four decimals confirms the boundary-bias
+is *the rasterizer's*, not any one wrapper's. If a fourth wrapper
+landed at, say, +1.7% relative volume error on the cube, you'd know it
+either patched the rasterizer or rolled its own.
+
 ### C# / .NET Framework: Dicom_RT_Images_Csharp
 
 The [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp)
@@ -703,23 +786,24 @@ is documented in the file's header — every override should be.
 What makes this gate worth shipping across all three projects is that the
 same fixture surfaces qualitatively different rasterizer behaviors:
 
-| Metric on `cube` | DicomRTTool (cv2.fillPoly) | PyRaDiSe (cv2.fillPoly) | DicomRTToolC# (C# scanline) |
-|---|---|---|---|
-| Dice                       | 0.9835 | 0.9835 | 0.9833 |
-| Surface DSC @ 1 mm         | 0.999  | 0.999  | 1.000  |
-| HD95 (mm)                  | 1.0    | 1.0    | 1.0    |
-| MSD (mm)                   | 0.33   | 0.33   | 0.33   |
-| **Volume relative error**  | **+3.36%** | **+3.36%** | **0.00%** |
+| Metric on `cube` | DicomRTTool (cv2.fillPoly) | PyRaDiSe (cv2.fillPoly) | rt-utils (cv2.fillPoly) | DicomRTToolC# (C# scanline) |
+|---|---|---|---|---|
+| Dice                       | 0.9835 | 0.9835 | 0.9835 | 0.9833 |
+| Surface DSC @ 1 mm         | 0.999  | 0.999  | 0.999  | 1.000  |
+| HD95 (mm)                  | 1.0    | 1.0    | 1.0    | 1.0    |
+| MSD (mm)                   | 0.33   | 0.33   | 0.33   | 0.33   |
+| **Volume relative error**  | **+3.36%** | **+3.36%** | **+3.36%** | **0.00%** |
 
 cv2.fillPoly is biased: it counts ~3.4% more voxels than ground truth, and
-both Python wrappers around it inherit the bias bit-for-bit. The C# scanline
-implementation gets the volume *exactly* right but disagrees with the GT on
-which ~3500 voxels along the boundary belong to the cube — symmetric error,
-not systematic over-fill. The two cv2 wrappers and the C# scanline land at
-near-identical Dice on the cube but for completely different reasons.
-Without the analytic ground truth this distinction would be invisible; with
-it, all three implementations get a sharper picture of where they actually
-sit, and you can tell at a glance which converters share a rasterizer.
+all three Python wrappers around it inherit the bias bit-for-bit. The C#
+scanline implementation gets the volume *exactly* right but disagrees with
+the GT on which ~3500 voxels along the boundary belong to the cube —
+symmetric error, not systematic over-fill. The three cv2 wrappers and the
+C# scanline land at near-identical Dice on the cube but for completely
+different reasons. Without the analytic ground truth this distinction
+would be invisible; with it, all four implementations get a sharper
+picture of where they actually sit, and you can tell at a glance which
+converters share a rasterizer.
 
 ## Provenance and ground-truth code
 
