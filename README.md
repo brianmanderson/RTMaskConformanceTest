@@ -2,18 +2,124 @@
 
 A universal conformance test suite for DICOM-RT-to-NIfTI converters.
 
-This tool generates a deterministic synthetic CT volume plus an RTSTRUCT containing
-seven analytically-defined ROIs (sphere, cube, cylinder, ellipsoid, torus, hollow
-sphere, hollow cylinder), and provides analytic ground-truth NIfTI masks for each.
-Any tool that claims to convert RTSTRUCT contours into per-ROI NIfTI masks can be
-checked against these references — language-agnostic, two-step:
+This tool generates a deterministic synthetic CT volume paired with an
+RTSTRUCT containing seven analytically-defined ROIs (sphere, cube, cylinder,
+ellipsoid, torus, hollow sphere, hollow cylinder), and ships analytic
+ground-truth NIfTI masks for each. Any tool that converts RTSTRUCT contours
+into per-ROI NIfTI masks can be checked against those references —
+language-agnostic, in three steps:
 
 1. `rtmask-conformance generate <fixture_dir>` writes the fixture (CT + RTSTRUCT + GT).
-2. Run your converter against the fixture; have it write `<roi>.nii.gz` files into a predictions directory.
-3. `rtmask-conformance verify --predictions <pred_dir> --groundtruth <fixture_dir>/groundtruth` scores each ROI and exits 0 (pass) or 1 (fail).
+2. Run your converter against the fixture; have it emit one `<roi>.nii.gz` per ROI into a predictions directory.
+3. `rtmask-conformance verify --predictions <pred_dir> --groundtruth <fixture_dir>/groundtruth` scores each ROI and exits `0` (pass) or `1` (fail).
 
-Because the ground-truth masks are computed analytically (not by a competing
-converter), the measurement is independent of the tool under test.
+Because ground truth is computed analytically rather than by a competing
+converter, the measurement is independent of the tool under test. That
+independence only matters if the metrics beneath the gate are themselves
+trustworthy — so before showing how to wire one into a build, here is what
+those metrics do under controlled perturbation.
+
+## Validation on shifted structures
+
+A conformance gate is only as trustworthy as the metrics underneath it.
+The internal validation suite proves the metrics respond predictably to
+known geometric perturbation — not only on the seven shipped ROIs, but on
+synthetic cases whose answers can be recovered with arithmetic.
+
+### Continuous shift on a synthetic cube
+
+Two identical 10³ binary cubes, one translated along x by 0–10 voxels at
+1 mm spacing. Dice falls linearly through zero once the shift exceeds the
+cube's edge; HD95 tracks the shift exactly, because the worst displaced
+contour voxel sits at precisely the shift distance from its nearest match.
+The dotted *ideal* `HD95 = shift × spacing` reference sits flush with the
+measurement at every step:
+
+![Two 10³ cubes, one shifted along x — Dice falls, HD95 tracks the shift](docs/validation/figures/fig3_metrics_vs_shift.png)
+
+### The same shift logic on the seven shipped primitives
+
+The end-to-end suite in
+[`test_offset_overlap_e2e.py`](src/rtmask_conformance/tests/test_offset_overlap_e2e.py)
+applies the same translation to the real fixture. It rasterises the ideal
+prediction for every conformance ROI, writes perturbed copies via
+`np.roll` (with the wraparound zeroed so the result is a true translation),
+and runs the full verifier against the analytic ground truth:
+
+| Perturbation | Pinned behavior across all 7 ROIs |
+|---|---|
+| None (ideal predictions) | Dice ≥ 0.999, HD95 ≤ 1 mm |
+| 1-voxel x-shift | HD95 ∈ [0.5, 3.0] mm; Dice < 1 |
+| 3-voxel x-shift | every ROI's status = `FAIL` |
+| Ideal → 1-voxel → 3-voxel | Dice and HD95 strictly monotone in shift |
+
+The monotonicity row is the strongest cross-metric assertion in the suite.
+A regression that swaps the operands of `binary_dsc` or breaks the signed
+distance map will either invert the ordering across the three shifts or
+collapse them — a class of bug that per-case threshold tests do not always
+catch, because flipping a numerator and denominator can still leave a
+single measurement on the right side of a pass/fail line. The same fixture
+also runs a 1-voxel `binary_erosion` perturbation to verify volume error
+is signed correctly: every ROI under-reports volume, with the relative
+loss tracking surface-area-to-volume ratio.
+
+### Hand-computable arithmetic underneath
+
+Every Dice, surface-DSC, HD95, MSD, and volume-error number this suite
+reports comes from three vendored functions in
+[`_vendor/metrics.py`](src/rtmask_conformance/_vendor/metrics.py). Each is
+pinned against hand-computable expected values on synthetic numpy arrays —
+six axis-aligned cube configurations whose Dice is recoverable by counting
+voxels: identity 1.0000, half-overlap 0.5000, eighth-overlap 0.1250, subset
+0.2222, disjoint 0.0000, one-empty 0.0000. Measured agrees with analytical
+to four decimal places across every accepted dtype (`bool`, `uint8`,
+`uint16`, `int32`, `float32`):
+
+![Six discrete cube overlap cases — analytical vs measured Dice](docs/validation/figures/fig1_cube_overlap_cases.png)
+
+A [Metric drift gate](.github/workflows/ci.yml) runs these unit tests on
+every CI build before the slower end-to-end suite begins, so a numeric
+regression in any vendored metric fails the build at the cheapest stage.
+The full battery — anisotropic spacing, surface DSC saturation under
+tolerance, erosion volume loss vs surface-area-to-volume ratio — is in
+[**docs/VALIDATION.md**](docs/VALIDATION.md), with every figure
+programmatically regenerated from the live metric functions so visual
+drift mirrors numeric drift.
+
+## What gets validated
+
+### ROIs (v0.1)
+
+Seven closed-planar primitives, each centered in a different region of a 512×512×200
+mm volume to avoid overlap:
+
+| ROI name | Shape | Dimensions | Note |
+|---|---|---|---|
+| `sphere` | sphere | r = 40 mm | smooth, convex |
+| `cube` | cube | side 60 mm | axis-aligned |
+| `cylinder` | z-axis cylinder | r = 30, h = 80 mm | curved + flat caps |
+| `ellipsoid` | ellipsoid | semi-axes (30, 50, 60) mm | anisotropic |
+| `torus` | z-axis torus | R = 60, r = 20 mm | annular cross-sections |
+| `hollow_sphere` | hollow sphere | R = 40, r = 20 mm | XOR (multi-contour) |
+| `straw` | hollow cylinder | R = 40, r = 20, h = 120 mm | XOR (multi-contour) |
+
+Tools that mishandle multi-contour even-odd fill produce a solid (Dice ≈ 0.6) on the
+two XOR primitives and will fail conformance loudly — that is a feature, not a bug.
+
+### Metrics
+
+Each ROI is scored on:
+
+- **Dice** (volumetric)
+- **Surface DSC @ 1 mm** (Nikolov-style, tolerance-bounded)
+- **Hausdorff 95** (mm)
+- **Mean surface distance** (mm)
+- **Relative volume error**
+
+A geometry precheck runs first: if a prediction's `(origin, spacing, size, direction)`
+differs from the ground-truth NIfTI by more than 1e-4, the ROI is flagged
+`GEOMETRY_MISMATCH` rather than scored — most third-party tool bugs are geometry, not
+voxel labeling, and surfacing them separately is more diagnostic.
 
 ## Install
 
@@ -47,39 +153,6 @@ Exit codes: `0` all ROIs PASS, `1` any FAIL/MISSING/GEOMETRY_MISMATCH, `2` usage
 See the file `README_FOR_TOOL_AUTHOR.md` written into the fixture directory for the
 complete contract a tool author must satisfy.
 
-## ROIs (v0.1)
-
-Seven closed-planar primitives, each centered in a different region of a 512×512×200
-mm volume to avoid overlap:
-
-| ROI name | Shape | Dimensions | Note |
-|---|---|---|---|
-| `sphere` | sphere | r = 40 mm | smooth, convex |
-| `cube` | cube | side 60 mm | axis-aligned |
-| `cylinder` | z-axis cylinder | r = 30, h = 80 mm | curved + flat caps |
-| `ellipsoid` | ellipsoid | semi-axes (30, 50, 60) mm | anisotropic |
-| `torus` | z-axis torus | R = 60, r = 20 mm | annular cross-sections |
-| `hollow_sphere` | hollow sphere | R = 40, r = 20 mm | XOR (multi-contour) |
-| `straw` | hollow cylinder | R = 40, r = 20, h = 120 mm | XOR (multi-contour) |
-
-Tools that mishandle multi-contour even-odd fill produce a solid (Dice ≈ 0.6) on the
-two XOR primitives and will fail conformance loudly — that is a feature, not a bug.
-
-## Metrics
-
-Each ROI is scored on:
-
-- **Dice** (volumetric)
-- **Surface DSC @ 1 mm** (Nikolov-style, tolerance-bounded)
-- **Hausdorff 95** (mm)
-- **Mean surface distance** (mm)
-- **Relative volume error**
-
-A geometry precheck runs first: if a prediction's `(origin, spacing, size, direction)`
-differs from the ground-truth NIfTI by more than 1e-4, the ROI is flagged
-`GEOMETRY_MISMATCH` rather than scored — most third-party tool bugs are geometry, not
-voxel labeling, and surfacing them separately is more diagnostic.
-
 ## Custom thresholds
 
 Defaults ship in `src/rtmask_conformance/data/default_thresholds.yaml`. Override with
@@ -111,22 +184,6 @@ pytest --pyargs rtmask_conformance.tests
 
 This produces one parametrized test per ROI with the same pass/fail semantics as the
 CLI.
-
-## How the metrics themselves are validated
-
-Every Dice, surface-DSC, HD95, and volume-error number this suite reports
-ultimately comes from three vendored functions in
-[`_vendor/metrics.py`](src/rtmask_conformance/_vendor/metrics.py). To make sure
-those don't silently drift, each function is pinned against hand-computable
-expected values on synthetic numpy arrays — and a [Metric drift
-gate](.github/workflows/ci.yml) runs them on every CI build before the slower
-end-to-end tests start.
-
-[**docs/VALIDATION.md**](docs/VALIDATION.md) walks through the cases with
-figures: cube-overlap configurations with analytical Dice (1.0, 0.5, 0.25,
-0.222…); HD95 tracking voxel shift × spacing exactly; surface-DSC saturating
-at the tolerance threshold; and the end-to-end perturbation tests on the
-seven shipped primitives.
 
 ## Use as a library / plugin evaluator
 
