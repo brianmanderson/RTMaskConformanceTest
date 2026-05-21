@@ -210,7 +210,7 @@ converter call.
 
 | Tool | Language / runtime | Pattern | Recommended for |
 |---|---|---|---|
-| [DicomRTTool](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask) | Python / pip | pyproject extra + pytest + CI job | Python packages with an existing pytest suite |
+| [DicomRTTool](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask) | Python / pip (PyPI-published) | requirements-file dep + pytest + CI job | Python packages with an existing pytest suite, especially PyPI-published ones |
 | [PyRaDiSe](https://github.com/brianmanderson/pyradise) | Python / pip | same as DicomRTTool, with single-folder staging | Python packages whose API takes a single root directory |
 | [rt-utils](https://github.com/brianmanderson/rt-utils) | Python / pip | same four-piece pattern; mask returned in-memory rather than written to disk | Python packages whose converter returns numpy arrays |
 | [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp) | C# / .NET Framework 4.8 | CI-only: build → headless CLI → verify | Compiled tools with a CLI / headless mode |
@@ -227,24 +227,41 @@ recommended pattern if your tool is a Python package with a `pyproject.toml`
 and existing pytest suite — copy these four pieces and adapt the converter
 call. Live files:
 
-- [pyproject.toml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/pyproject.toml) — opt-in extra
+- [requirements-conformance.txt](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/requirements-conformance.txt) — opt-in dependency (kept out of `pyproject.toml` so PyPI uploads aren't blocked; see below)
 - [tests/test_conformance.py](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/tests/test_conformance.py) — fixture + per-ROI assertions
 - [tests/conformance.yaml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/tests/conformance.yaml) — calibrated thresholds
 - [.github/workflows/conformance.yml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
 
-#### 1. pyproject.toml — opt-in extra
+#### 1. requirements-conformance.txt — opt-in dependency (PyPI-safe)
 
-Keep the conformance dependency out of the default install so users who only
-want the package don't pull `pyyaml`/`trimesh`/etc.:
+The intuitive place for this dependency is a `[project.optional-dependencies]`
+extra in `pyproject.toml`. **Don't do that if you publish to PyPI.** PyPI
+rejects any uploaded distribution whose metadata contains a PEP 508 direct
+URL reference (`name @ git+https://...`) with `HTTPError 400: Invalid value
+for requires_dist`. The dependency has to live somewhere pip understands but
+the PyPI uploader never inspects — a plain requirements file is the
+simplest such place:
 
-```toml
-[project.optional-dependencies]
-conformance = [
-    "rtmask-conformance @ git+https://github.com/brianmanderson/RTMaskConformanceTest",
-]
+```
+# requirements-conformance.txt
+# Conformance-suite-only dependency. Kept out of pyproject.toml because
+# PyPI rejects metadata containing direct URL references (PEP 508
+# `name @ url`). Install with:
+#   pip install -e .[dev] -r requirements-conformance.txt
+rtmask-conformance @ git+https://github.com/brianmanderson/RTMaskConformanceTest
 ```
 
-Developers and CI install with `pip install -e .[conformance]`.
+Developers and CI install with `pip install -e ".[dev]" -r requirements-conformance.txt`.
+The base package install (`pip install yourtool`) is untouched — users who
+only want the converter don't pull `pyyaml`/`trimesh`/etc., same as the
+extras-based version would have given them.
+
+If your tool is *not* PyPI-published, you can equivalently use a
+`[project.optional-dependencies] conformance = ["rtmask-conformance @
+git+https://..."]` extra and install with `pip install -e .[conformance]`.
+It's the same dependency, just declared in a place that PyPI's metadata
+validator will reject on upload. When in doubt, use the requirements-file
+form — it works in both cases.
 
 #### 2. tests/test_conformance.py — pytest fixture + assertions
 
@@ -261,7 +278,7 @@ import SimpleITK as sitk
 # so the default `pytest` run is unaffected.
 rtmask_conformance = pytest.importorskip(
     "rtmask_conformance",
-    reason="install the `conformance` extra: pip install -e .[conformance]",
+    reason="install rtmask-conformance: pip install -e .[dev] -r requirements-conformance.txt",
 )
 
 from rtmask_conformance import CONFORMANCE_ROIS, generate_fixture, load_config  # noqa: E402
@@ -384,10 +401,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-conformance.txt
       - run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,conformance]"
+          pip install -e ".[dev]" -r requirements-conformance.txt
       - run: pytest tests/test_conformance.py -v
 ```
 
@@ -414,7 +433,7 @@ the same four-piece shape as DicomRTTool — see those subsections above for
 the canonical walkthrough. The only differences worth calling out are
 PyRaDiSe-specific:
 
-- [pyproject.toml](https://github.com/brianmanderson/pyradise/blob/main/pyproject.toml) — opt-in `conformance` extra
+- [pyproject.toml](https://github.com/brianmanderson/pyradise/blob/main/pyproject.toml) — opt-in `conformance` extra (PyRaDiSe is not PyPI-published, so the extras form is fine here; if you later publish, switch to the requirements-file pattern shown for DicomRTTool above)
 - [tests/test_conformance.py](https://github.com/brianmanderson/pyradise/blob/main/tests/test_conformance.py) — fixture + per-ROI assertions
 - [tests/conformance.yaml](https://github.com/brianmanderson/pyradise/blob/main/tests/conformance.yaml) — calibrated thresholds
 - [.github/workflows/conformance.yml](https://github.com/brianmanderson/pyradise/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
@@ -497,7 +516,7 @@ the same four-piece shape as DicomRTTool. It's the recommended template
 when the converter returns the mask **in memory** as a numpy array rather
 than writing per-ROI NIfTIs to disk. Live files:
 
-- [setup.py](https://github.com/brianmanderson/rt-utils/blob/main/setup.py) — opt-in `conformance` extra
+- [setup.py](https://github.com/brianmanderson/rt-utils/blob/main/setup.py) — opt-in `conformance` extra in `extras_require` (this fork is not PyPI-published from here, so the extras form is fine; the PyPI-safe requirements-file pattern shown for DicomRTTool above is the drop-in replacement when you do publish)
 - [tests/test_conformance.py](https://github.com/brianmanderson/rt-utils/blob/main/tests/test_conformance.py) — fixture + per-ROI assertions
 - [tests/conformance.yaml](https://github.com/brianmanderson/rt-utils/blob/main/tests/conformance.yaml) — calibrated thresholds (cube relaxation only)
 - [.github/workflows/conformance.yml](https://github.com/brianmanderson/rt-utils/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
