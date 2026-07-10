@@ -6,7 +6,7 @@ This tool generates a deterministic synthetic CT volume paired with an
 RTSTRUCT containing seven analytically-defined ROIs (sphere, cube, cylinder,
 ellipsoid, torus, hollow sphere, hollow cylinder), and ships analytic
 ground-truth NIfTI masks for each. Any tool that converts RTSTRUCT contours
-into per-ROI NIfTI masks can be checked against those references —
+into per-ROI NIfTI masks can be checked against those references â€”
 language-agnostic, in three steps:
 
 1. `rtmask-conformance generate <fixture_dir>` writes the fixture (CT + RTSTRUCT + GT).
@@ -16,26 +16,26 @@ language-agnostic, in three steps:
 Because ground truth is computed analytically rather than by a competing
 converter, the measurement is independent of the tool under test. That
 independence only matters if the metrics beneath the gate are themselves
-trustworthy — so before showing how to wire one into a build, here is what
+trustworthy â€” so before showing how to wire one into a build, here is what
 those metrics do under controlled perturbation.
 
 ## Validation on shifted structures
 
 A conformance gate is only as trustworthy as the metrics underneath it.
 The internal validation suite proves the metrics respond predictably to
-known geometric perturbation — not only on the seven shipped ROIs, but on
+known geometric perturbation â€” not only on the seven shipped ROIs, but on
 synthetic cases whose answers can be recovered with arithmetic.
 
 ### Continuous shift on a synthetic cube
 
-Two identical 10³ binary cubes, one translated along x by 0–10 voxels at
+Two identical 10Â³ binary cubes, one translated along x by 0â€“10 voxels at
 1 mm spacing. Dice falls linearly through zero once the shift exceeds the
 cube's edge; HD95 tracks the shift exactly, because the worst displaced
 contour voxel sits at precisely the shift distance from its nearest match.
-The dotted *ideal* `HD95 = shift × spacing` reference sits flush with the
+The dotted *ideal* `HD95 = shift Ã— spacing` reference sits flush with the
 measurement at every step:
 
-![Two 10³ cubes, one shifted along x — Dice falls, HD95 tracks the shift](docs/validation/figures/fig3_metrics_vs_shift.png)
+![Two 10Â³ cubes, one shifted along x â€” Dice falls, HD95 tracks the shift](docs/validation/figures/fig3_metrics_vs_shift.png)
 
 ### The same shift logic on the seven shipped primitives
 
@@ -48,15 +48,15 @@ and runs the full verifier against the analytic ground truth:
 
 | Perturbation | Pinned behavior across all 7 ROIs |
 |---|---|
-| None (ideal predictions) | Dice ≥ 0.999, HD95 ≤ 1 mm |
-| 1-voxel x-shift | HD95 ∈ [0.5, 3.0] mm; Dice < 1 |
+| None (ideal predictions) | Dice â‰¥ 0.999, HD95 â‰¤ 1 mm |
+| 1-voxel x-shift | HD95 âˆˆ [0.5, 3.0] mm; Dice < 1 |
 | 3-voxel x-shift | every ROI's status = `FAIL` |
-| Ideal → 1-voxel → 3-voxel | Dice and HD95 strictly monotone in shift |
+| Ideal â†’ 1-voxel â†’ 3-voxel | Dice and HD95 strictly monotone in shift |
 
 The monotonicity row is the strongest cross-metric assertion in the suite.
 A regression that swaps the operands of `binary_dsc` or breaks the signed
 distance map will either invert the ordering across the three shifts or
-collapse them — a class of bug that per-case threshold tests do not always
+collapse them â€” a class of bug that per-case threshold tests do not always
 catch, because flipping a numerator and denominator can still leave a
 single measurement on the right side of a pass/fail line. The same fixture
 also runs a 1-voxel `binary_erosion` perturbation to verify volume error
@@ -68,20 +68,20 @@ loss tracking surface-area-to-volume ratio.
 Every Dice, surface-DSC, HD95, MSD, and volume-error number this suite
 reports comes from three vendored functions in
 [`_vendor/metrics.py`](src/rtmask_conformance/_vendor/metrics.py). Each is
-pinned against hand-computable expected values on synthetic numpy arrays —
+pinned against hand-computable expected values on synthetic numpy arrays â€”
 six axis-aligned cube configurations whose Dice is recoverable by counting
 voxels: identity 1.0000, half-overlap 0.5000, eighth-overlap 0.1250, subset
 0.2222, disjoint 0.0000, one-empty 0.0000. Measured agrees with analytical
 to four decimal places across every accepted dtype (`bool`, `uint8`,
 `uint16`, `int32`, `float32`):
 
-![Six discrete cube overlap cases — analytical vs measured Dice](docs/validation/figures/fig1_cube_overlap_cases.png)
+![Six discrete cube overlap cases â€” analytical vs measured Dice](docs/validation/figures/fig1_cube_overlap_cases.png)
 
 A [Metric drift gate](.github/workflows/ci.yml) runs these unit tests on
 every CI build before the slower end-to-end suite begins, so a numeric
 regression in any vendored metric fails the build at the cheapest stage.
-The full battery — anisotropic spacing, surface DSC saturation under
-tolerance, erosion volume loss vs surface-area-to-volume ratio — is in
+The full battery â€” anisotropic spacing, surface DSC saturation under
+tolerance, erosion volume loss vs surface-area-to-volume ratio â€” is in
 [**docs/VALIDATION.md**](docs/VALIDATION.md), with every figure
 programmatically regenerated from the live metric functions so visual
 drift mirrors numeric drift.
@@ -90,7 +90,7 @@ drift mirrors numeric drift.
 
 ### ROIs (v0.1)
 
-Seven closed-planar primitives, each centered in a different region of a 512×512×200
+Seven closed-planar primitives, each centered in a different region of a 512Ã—512Ã—200
 mm volume to avoid overlap:
 
 | ROI name | Shape | Dimensions | Note |
@@ -103,8 +103,8 @@ mm volume to avoid overlap:
 | `hollow_sphere` | hollow sphere | R = 40, r = 20 mm | XOR (multi-contour) |
 | `straw` | hollow cylinder | R = 40, r = 20, h = 120 mm | XOR (multi-contour) |
 
-Tools that mishandle multi-contour even-odd fill produce a solid (Dice ≈ 0.6) on the
-two XOR primitives and will fail conformance loudly — that is a feature, not a bug.
+Tools that mishandle multi-contour even-odd fill produce a solid (Dice â‰ˆ 0.6) on the
+two XOR primitives and will fail conformance loudly â€” that is a feature, not a bug.
 
 ### Metrics
 
@@ -118,7 +118,7 @@ Each ROI is scored on:
 
 A geometry precheck runs first: if a prediction's `(origin, spacing, size, direction)`
 differs from the ground-truth NIfTI by more than 1e-4, the ROI is flagged
-`GEOMETRY_MISMATCH` rather than scored — most third-party tool bugs are geometry, not
+`GEOMETRY_MISMATCH` rather than scored â€” most third-party tool bugs are geometry, not
 voxel labeling, and surfacing them separately is more diagnostic.
 
 ## Install
@@ -127,7 +127,7 @@ voxel labeling, and surfacing them separately is more diagnostic.
 pip install git+https://github.com/brianmanderson/RTMaskConformanceTest
 ```
 
-Requires Python ≥ 3.10. Runtime deps: `pydicom`, `SimpleITK`, `numpy`, `scipy`, `pyyaml`.
+Requires Python â‰¥ 3.10. Runtime deps: `pydicom`, `SimpleITK`, `numpy`, `scipy`, `pyyaml`.
 
 ## Quick start
 
@@ -187,20 +187,20 @@ CLI.
 
 ## Use as a library / plugin evaluator
 
-For tools that already hold prediction and ground-truth masks in memory — or that
-score data unrelated to the seven shipped ROIs — the package exposes two
+For tools that already hold prediction and ground-truth masks in memory â€” or that
+score data unrelated to the seven shipped ROIs â€” the package exposes two
 format-flexible entry points. Either argument may be a `numpy.ndarray`, a path
 to a NIfTI file, or a `SimpleITK.Image`, and the two arguments may differ in form:
 
 ```python
 from rtmask_conformance import evaluate_masks, evaluate_masks_with_thresholds
 
-# 1. Raw metrics — no thresholds, no notion of "ROI". Just the numbers.
+# 1. Raw metrics â€” no thresholds, no notion of "ROI". Just the numbers.
 metrics = evaluate_masks(prediction, ground_truth, spacing_xyz=(1.0, 1.0, 1.0))
 print(metrics.dice, metrics.surface_dice, metrics.hd95_mm,
       metrics.msd_mm, metrics.volume_rel_err)
 
-# 2. Graded result — apply thresholds, get a ResultRecord with PASS/FAIL.
+# 2. Graded result â€” apply thresholds, get a ResultRecord with PASS/FAIL.
 record = evaluate_masks_with_thresholds(
     prediction, ground_truth,
     spacing_xyz=(1.0, 1.0, 1.0),
@@ -229,9 +229,9 @@ Pass `check_geometry=False` to score arbitrary array pairs.
 
 `evaluate_masks_with_thresholds` resolves thresholds in priority order:
 
-1. `thresholds=` — a `Thresholds` instance (used as-is) or a `dict` (shallow-merged
+1. `thresholds=` â€” a `Thresholds` instance (used as-is) or a `dict` (shallow-merged
    over `config.defaults`).
-2. `roi="<one of CONFORMANCE_ROIS>"` — looks up per-ROI thresholds from the shipped
+2. `roi="<one of CONFORMANCE_ROIS>"` â€” looks up per-ROI thresholds from the shipped
    YAML.
 3. Fallback to the shipped `defaults` block when `roi` is unknown / unspecified.
 
@@ -256,7 +256,7 @@ MaskMetrics(
 
 `evaluate_masks_with_thresholds` returns a `ResultRecord` with `.status`,
 `.metrics`, `.thresholds`, `.violations`, and (on geometry failure)
-`.geometry_diagnostic` — the same dataclass `evaluate_one` returns, so any code
+`.geometry_diagnostic` â€” the same dataclass `evaluate_one` returns, so any code
 that already consumes verify reports works unchanged.
 
 ## Real-world integration examples
@@ -270,33 +270,33 @@ converter call.
 | [DicomRTTool](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask) | Python / pip (PyPI-published) | requirements-file dep + pytest + CI job | Python packages with an existing pytest suite, especially PyPI-published ones |
 | [PyRaDiSe](https://github.com/brianmanderson/pyradise) | Python / pip | same as DicomRTTool, with single-folder staging | Python packages whose API takes a single root directory |
 | [rt-utils](https://github.com/brianmanderson/rt-utils) | Python / pip | same four-piece pattern; mask returned in-memory rather than written to disk | Python packages whose converter returns numpy arrays |
-| [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp) | C# / .NET Framework 4.8 | CI-only: build → headless CLI → verify | Compiled tools with a CLI / headless mode |
+| [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp) | C# / .NET Framework 4.8 | CI-only: build â†’ headless CLI â†’ verify | Compiled tools with a CLI / headless mode |
 
 The three Python integrations drive the suite from inside pytest; the C#
 integration is purely CLI-driven inside a GitHub Actions job. The accuracy
-gate is the same — only the surrounding plumbing differs.
+gate is the same â€” only the surrounding plumbing differs.
 
 ### Python: DicomRTTool
 
 The [DicomRTTool](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask)
 package wires this conformance suite in as a separate CI check. It's the
 recommended pattern if your tool is a Python package with a `pyproject.toml`
-and existing pytest suite — copy these four pieces and adapt the converter
+and existing pytest suite â€” copy these four pieces and adapt the converter
 call. Live files:
 
-- [requirements-conformance.txt](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/requirements-conformance.txt) — opt-in dependency (kept out of `pyproject.toml` so PyPI uploads aren't blocked; see below)
-- [tests/test_conformance.py](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/tests/test_conformance.py) — fixture + per-ROI assertions
-- [tests/conformance.yaml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/tests/conformance.yaml) — calibrated thresholds
-- [.github/workflows/conformance.yml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
+- [requirements-conformance.txt](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/requirements-conformance.txt) â€” opt-in dependency (kept out of `pyproject.toml` so PyPI uploads aren't blocked; see below)
+- [tests/test_conformance.py](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/tests/test_conformance.py) â€” fixture + per-ROI assertions
+- [tests/conformance.yaml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/tests/conformance.yaml) â€” calibrated thresholds
+- [.github/workflows/conformance.yml](https://github.com/brianmanderson/Dicom_RT_and_Images_to_Mask/blob/main/.github/workflows/conformance.yml) â€” separate "Conformance" CI check
 
-#### 1. requirements-conformance.txt — opt-in dependency (PyPI-safe)
+#### 1. requirements-conformance.txt â€” opt-in dependency (PyPI-safe)
 
 The intuitive place for this dependency is a `[project.optional-dependencies]`
 extra in `pyproject.toml`. **Don't do that if you publish to PyPI.** PyPI
 rejects any uploaded distribution whose metadata contains a PEP 508 direct
 URL reference (`name @ git+https://...`) with `HTTPError 400: Invalid value
 for requires_dist`. The dependency has to live somewhere pip understands but
-the PyPI uploader never inspects — a plain requirements file is the
+the PyPI uploader never inspects â€” a plain requirements file is the
 simplest such place:
 
 ```
@@ -309,7 +309,7 @@ rtmask-conformance @ git+https://github.com/brianmanderson/RTMaskConformanceTest
 ```
 
 Developers and CI install with `pip install -e ".[dev]" -r requirements-conformance.txt`.
-The base package install (`pip install yourtool`) is untouched — users who
+The base package install (`pip install yourtool`) is untouched â€” users who
 only want the converter don't pull `pyyaml`/`trimesh`/etc., same as the
 extras-based version would have given them.
 
@@ -318,9 +318,9 @@ If your tool is *not* PyPI-published, you can equivalently use a
 git+https://..."]` extra and install with `pip install -e .[conformance]`.
 It's the same dependency, just declared in a place that PyPI's metadata
 validator will reject on upload. When in doubt, use the requirements-file
-form — it works in both cases.
+form â€” it works in both cases.
 
-#### 2. tests/test_conformance.py — pytest fixture + assertions
+#### 2. tests/test_conformance.py â€” pytest fixture + assertions
 
 ```python
 """Conformance test: <YourTool> vs RTMaskConformanceTest analytic ground truth."""
@@ -407,10 +407,10 @@ the converter-driving block inside the `predictions` fixture. Everything
 else (fixture wiring, geometry handling, parametrization, threshold
 resolution) is identical across consumers.
 
-#### 3. tests/conformance.yaml — document any threshold relaxations
+#### 3. tests/conformance.yaml â€” document any threshold relaxations
 
 The first time you run the test, expect one or two ROIs to land just under
-the published defaults — most rasterizers carry a half-voxel boundary bias.
+the published defaults â€” most rasterizers carry a half-voxel boundary bias.
 Rather than baking that into the package, document it locally so a future
 voxelizer fix can tighten it:
 
@@ -433,7 +433,7 @@ canonical example: every relaxation is dated, attributed to a specific
 behavior, and ends with the path back to the published default. That way
 the YAML stays self-explanatory as the rasterizer evolves.
 
-#### 4. .github/workflows/conformance.yml — separate CI check
+#### 4. .github/workflows/conformance.yml â€” separate CI check
 
 A standalone job means "Conformance" appears as its own status check on PRs,
 distinct from the existing `Tests` matrix:
@@ -467,8 +467,8 @@ jobs:
       - run: pytest tests/test_conformance.py -v
 ```
 
-Conformance is an accuracy property — Python/OS portability is already
-covered by your main test matrix, so a single `ubuntu-latest × py3.12`
+Conformance is an accuracy property â€” Python/OS portability is already
+covered by your main test matrix, so a single `ubuntu-latest Ã— py3.12`
 job here is plenty. `workflow_dispatch` lets you re-run manually from
 the Actions tab after an upstream `rtmask-conformance` change without
 needing a code push.
@@ -478,28 +478,28 @@ needing a code push.
 - `sphere`, `cylinder`, `ellipsoid`, `torus`, `hollow_sphere`, `straw`
   typically pass on defaults if the converter is correct.
 - `cube` is the most common near-miss for boundary-inclusive rasterizers
-  (cv2.fillPoly, naïve scanline fill); document the relaxation per above.
-- `hollow_sphere` and `straw` are the strongest signal — a ~0.6 Dice on
+  (cv2.fillPoly, naÃ¯ve scanline fill); document the relaxation per above.
+- `hollow_sphere` and `straw` are the strongest signal â€” a ~0.6 Dice on
   these means even-odd / multi-contour XOR is broken, which is a real
   bug in the converter, not a threshold issue.
 
 ### Python (variant): PyRaDiSe
 
 [PyRaDiSe](https://github.com/brianmanderson/pyradise) wires the suite in
-the same four-piece shape as DicomRTTool — see those subsections above for
+the same four-piece shape as DicomRTTool â€” see those subsections above for
 the canonical walkthrough. The only differences worth calling out are
 PyRaDiSe-specific:
 
-- [pyproject.toml](https://github.com/brianmanderson/pyradise/blob/main/pyproject.toml) — opt-in `conformance` extra (PyRaDiSe is not PyPI-published, so the extras form is fine here; if you later publish, switch to the requirements-file pattern shown for DicomRTTool above)
-- [tests/test_conformance.py](https://github.com/brianmanderson/pyradise/blob/main/tests/test_conformance.py) — fixture + per-ROI assertions
-- [tests/conformance.yaml](https://github.com/brianmanderson/pyradise/blob/main/tests/conformance.yaml) — calibrated thresholds
-- [.github/workflows/conformance.yml](https://github.com/brianmanderson/pyradise/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
+- [pyproject.toml](https://github.com/brianmanderson/pyradise/blob/main/pyproject.toml) â€” opt-in `conformance` extra (PyRaDiSe is not PyPI-published, so the extras form is fine here; if you later publish, switch to the requirements-file pattern shown for DicomRTTool above)
+- [tests/test_conformance.py](https://github.com/brianmanderson/pyradise/blob/main/tests/test_conformance.py) â€” fixture + per-ROI assertions
+- [tests/conformance.yaml](https://github.com/brianmanderson/pyradise/blob/main/tests/conformance.yaml) â€” calibrated thresholds
+- [.github/workflows/conformance.yml](https://github.com/brianmanderson/pyradise/blob/main/.github/workflows/conformance.yml) â€” separate "Conformance" CI check
 
-Three adaptations for PyRaDiSe specifically — these will apply to most
+Three adaptations for PyRaDiSe specifically â€” these will apply to most
 crawler-style packages:
 
 **1. Single-folder staging.** PyRaDiSe's `SubjectDicomCrawler` walks one
-root and groups by study/series — it can't take a CT folder and an
+root and groups by study/series â€” it can't take a CT folder and an
 RTSTRUCT path as separate arguments. The predictions fixture hard-links
 both into one temp dir before invoking the crawler:
 
@@ -536,10 +536,10 @@ If your tool's API has shifted across releases, the same try-multiple-names
 pattern keeps the test resilient without pinning a specific version.
 
 **3. Python version mismatch handled by pip.** PyRaDiSe declares Python
-≥ 3.8, but `rtmask-conformance` requires ≥ 3.10. The opt-in extra works
+â‰¥ 3.8, but `rtmask-conformance` requires â‰¥ 3.10. The opt-in extra works
 out automatically: pip simply refuses to install the extra on 3.8 / 3.9,
 so users on older interpreters get PyRaDiSe minus the conformance gate
-(the intended behavior — only CI / dev users on 3.10+ run the gate).
+(the intended behavior â€” only CI / dev users on 3.10+ run the gate).
 
 The CI workflow also pre-installs `setuptools` to provide the `distutils`
 shim PyRaDiSe imports (removed from stdlib in Python 3.12). Same trick
@@ -562,7 +562,7 @@ Two ostensibly-different Python wrappers around contour-to-mask conversion
 producing identical numbers down to four decimal places means they share
 an underlying rasterizer (in this case, both call into `cv2.fillPoly`).
 That's the suite functioning as a *fingerprint*, not just a pass/fail
-gate — useful for reasoning about provenance when an upstream
+gate â€” useful for reasoning about provenance when an upstream
 implementation changes, or when validating that a new wrapper hasn't
 introduced incidental drift on top of a shared dependency.
 
@@ -573,12 +573,12 @@ the same four-piece shape as DicomRTTool. It's the recommended template
 when the converter returns the mask **in memory** as a numpy array rather
 than writing per-ROI NIfTIs to disk. Live files:
 
-- [setup.py](https://github.com/brianmanderson/rt-utils/blob/main/setup.py) — opt-in `conformance` extra in `extras_require` (this fork is not PyPI-published from here, so the extras form is fine; the PyPI-safe requirements-file pattern shown for DicomRTTool above is the drop-in replacement when you do publish)
-- [tests/test_conformance.py](https://github.com/brianmanderson/rt-utils/blob/main/tests/test_conformance.py) — fixture + per-ROI assertions
-- [tests/conformance.yaml](https://github.com/brianmanderson/rt-utils/blob/main/tests/conformance.yaml) — calibrated thresholds (cube relaxation only)
-- [.github/workflows/conformance.yml](https://github.com/brianmanderson/rt-utils/blob/main/.github/workflows/conformance.yml) — separate "Conformance" CI check
+- [setup.py](https://github.com/brianmanderson/rt-utils/blob/main/setup.py) â€” opt-in `conformance` extra in `extras_require` (this fork is not PyPI-published from here, so the extras form is fine; the PyPI-safe requirements-file pattern shown for DicomRTTool above is the drop-in replacement when you do publish)
+- [tests/test_conformance.py](https://github.com/brianmanderson/rt-utils/blob/main/tests/test_conformance.py) â€” fixture + per-ROI assertions
+- [tests/conformance.yaml](https://github.com/brianmanderson/rt-utils/blob/main/tests/conformance.yaml) â€” calibrated thresholds (cube relaxation only)
+- [.github/workflows/conformance.yml](https://github.com/brianmanderson/rt-utils/blob/main/.github/workflows/conformance.yml) â€” separate "Conformance" CI check
 
-Two adaptations specific to rt-utils — these will apply to most "give me
+Two adaptations specific to rt-utils â€” these will apply to most "give me
 masks back as numpy arrays" libraries:
 
 **1. Predictions fixture writes NIfTIs from numpy + GT geometry.** The
@@ -604,8 +604,8 @@ for roi in rtstruct.get_roi_names():
 Why we copy GT geometry rather than re-deriving it from the CT: the
 fixture's CT slices and the analytic GT NIfTIs share the same geometry
 by construction, so copying the GT's metadata onto the prediction is
-equivalent to deriving it from the CT — and one less place to drift.
-The same `(numpy mask) → (sitk image with GT geometry) → (nii.gz)`
+equivalent to deriving it from the CT â€” and one less place to drift.
+The same `(numpy mask) â†’ (sitk image with GT geometry) â†’ (nii.gz)`
 recipe applies to any in-memory converter.
 
 **2. Empirical axis-order verification, not docstring trust.** rt-utils'
@@ -614,19 +614,19 @@ dimensions ordered `(Columns, Rows, Slices)`, which would imply
 `(X, Y, Z)` and `np.transpose(2, 1, 0)` to reach SimpleITK's `(Z, Y, X)`.
 That ordering is wrong: `cv2.fillPoly` writes into the per-slice mask at
 `[y, x]` indices, leaving the populated array in `(rows=Y, columns=X, slices=Z)`
-order. The conformance gate caught this on first run — `transpose(2, 1, 0)`
+order. The conformance gate caught this on first run â€” `transpose(2, 1, 0)`
 swapped Y and X for primitives whose centroid Y differed from X
 (`cylinder`, `ellipsoid`, `hollow_sphere`, `straw`), giving Dice = 0
 with volumes that otherwise matched the reference within ~1.7%; sphere,
 cube, and torus passed because their centroids happened to be on the
 Y = X diagonal. `np.transpose(2, 0, 1)` lined every primitive up on its
-GT centroid (Dice ≥ 0.985 across the board, with `cube` at the expected
+GT centroid (Dice â‰¥ 0.985 across the board, with `cube` at the expected
 cv2.fillPoly fingerprint of 0.9835). The
 [upstream docstring on get_roi_mask_by_name](https://github.com/brianmanderson/rt-utils/blob/main/rt_utils/rtstruct.py)
 now spells out the populated `(Y, X, Z)` convention so future consumers
 don't need to re-derive it. This is the analytic-fixture gate functioning
 as a property test on the converter's documentation, not just its
-correctness — exactly the kind of "right answer for the wrong reason"
+correctness â€” exactly the kind of "right answer for the wrong reason"
 case that download-based golden-mask tests can't surface.
 
 #### Cross-Python rasterizer fingerprint, three converters in
@@ -652,11 +652,11 @@ either patched the rasterizer or rolled its own.
 
 The [Dicom_RT_Images_Csharp](https://github.com/brianmanderson/Dicom_RT_Images_Csharp)
 project wires the suite in as a CI-only gate. It's the recommended pattern
-when the tool under test is a compiled binary with a CLI or headless mode —
+when the tool under test is a compiled binary with a CLI or headless mode â€”
 no Python package wrapping, no test runner needed. The pieces are:
 
-- [conformance.yaml](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/conformance.yaml) at the repo root — calibrated thresholds (same schema as the Python case).
-- [.github/workflows/conformance.yml](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/.github/workflows/conformance.yml) — single workflow that builds the C# project, runs its headless converter against the fixture, and verifies.
+- [conformance.yaml](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/conformance.yaml) at the repo root â€” calibrated thresholds (same schema as the Python case).
+- [.github/workflows/conformance.yml](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/.github/workflows/conformance.yml) â€” single workflow that builds the C# project, runs its headless converter against the fixture, and verifies.
 
 The C# tool's headless CLI surface (the bit you'll need an equivalent of in
 your tool) takes the fixture's RTSTRUCT + reference CT folder and writes one
@@ -670,13 +670,13 @@ Dicom_RT_images_Csharp.exe --headless --forward \
 ```
 
 Sourced in [Cli/HeadlessRunner.cs](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/Dicom_RT_images_Csharp/Cli/HeadlessRunner.cs)
-— it returns 0/non-zero and emits per-ROI volume rows on stdout. Matching that
+â€” it returns 0/non-zero and emits per-ROI volume rows on stdout. Matching that
 contract from your tool (whatever it's written in) is the only language-side
 work; everything else is YAML.
 
 #### Workflow walkthrough
 
-The CI job runs the same generate → run-tool → verify chain, just shelling out
+The CI job runs the same generate â†’ run-tool â†’ verify chain, just shelling out
 to the C# binary in the middle:
 
 ```yaml
@@ -759,7 +759,7 @@ jobs:
 
       - name: Run C# headless forward conversion
         # AttachConsole(ATTACH_PARENT_PROCESS) inside HeadlessRunner is
-        # unreliable on hosted runners — pwsh's `&` invocation against a
+        # unreliable on hosted runners â€” pwsh's `&` invocation against a
         # WinExe doesn't always plumb stdout/stderr back to the GitHub
         # Actions log. Use Start-Process -Wait with explicit redirection
         # to files, then dump them unconditionally so any failure in the
@@ -810,7 +810,7 @@ mode. The four that bit us during this integration:
 
 1. **`pip install --upgrade pip` fails on Windows runners.** Pip can't
    overwrite its own running `pip.exe`. Either use `python -m pip install`
-   (the python.exe entry point isn't the locked file) or skip the upgrade —
+   (the python.exe entry point isn't the locked file) or skip the upgrade â€”
    the runner's bundled pip is fresh enough.
 
 2. **`& exe.exe ...` against a WinExe doesn't always surface stdout.** A
@@ -834,7 +834,7 @@ mode. The four that bit us during this integration:
    platform makes the requirement explicit and unambiguous in the artifact
    path.
 
-Mention these in your own workflow's comments — future-you will thank past-you.
+Mention these in your own workflow's comments â€” future-you will thank past-you.
 
 #### What the run looks like
 
@@ -855,7 +855,7 @@ PASS   straw                               0.9821 1.0000  1.000  0.339   1.88
 ```
 
 The cube's relaxation in [conformance.yaml](https://github.com/brianmanderson/Dicom_RT_Images_Csharp/blob/main/conformance.yaml)
-is documented in the file's header — every override should be.
+is documented in the file's header â€” every override should be.
 
 #### The conformance suite as a cross-implementation diff
 
@@ -873,7 +873,7 @@ same fixture surfaces qualitatively different rasterizer behaviors:
 cv2.fillPoly is biased: it counts ~3.4% more voxels than ground truth, and
 all three Python wrappers around it inherit the bias bit-for-bit. The C#
 scanline implementation gets the volume *exactly* right but disagrees with
-the GT on which ~3500 voxels along the boundary belong to the cube —
+the GT on which ~3500 voxels along the boundary belong to the cube â€”
 symmetric error, not systematic over-fill. The three cv2 wrappers and the
 C# scanline land at near-identical Dice on the cube but for completely
 different reasons. Without the analytic ground truth this distinction
@@ -884,11 +884,12 @@ converters share a rasterizer.
 ## Provenance and ground-truth code
 
 Ground-truth is computed by partial-volume sub-voxel quadrature against the analytic
-shape definition (default: 8³ samples per voxel, thresholded at 0.5). The primitive
+shape definition (default: 8Â³ samples per voxel, thresholded at 0.5). The primitive
 classes, voxelizer, RTSTRUCT writer, and metric implementations are vendored from
-the upstream `rtmask_validation` project — see `tools/UPSTREAM_VERSION.txt` for the
+the upstream `rtmask_validation` project â€” see `tools/UPSTREAM_VERSION.txt` for the
 exact source commit, and `tools/sync_from_upstream.py` for the re-vendor script.
 
 ## License
 
 Apache-2.0
+
