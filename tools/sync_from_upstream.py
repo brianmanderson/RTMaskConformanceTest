@@ -16,6 +16,7 @@ The script does NOT touch the conformance-specific layer (``cli.py``,
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -55,7 +56,11 @@ def _slim_metrics(src_text: str) -> str:
     cut_marker = "#  Inter-tool agreement helpers"
     for i, line in enumerate(lines):
         if cut_marker in line:
-            return "".join(lines[: i - 1])  # drop the comment-banner separator too
+            kept = "".join(lines[: i - 1])  # drop the comment-banner separator too
+            # Upstream metrics.py lives in benchmark/, one level below the package
+            # root; the vendored copy sits at _vendor/ root, so its parent-relative
+            # imports (``from ..common.coords import ...``) move up one level.
+            return re.sub(r"^from \.\.(?=\w)", "from .", kept, flags=re.MULTILINE)
     raise RuntimeError(
         f"Could not find slim cut marker {cut_marker!r} in upstream metrics.py — "
         "upstream layout has drifted. Re-do the slim manually."

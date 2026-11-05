@@ -1,11 +1,12 @@
 upstream_repo: https://github.com/brianmanderson/Dicom_RT_Images_Csharp
 upstream_path: PythonCode/src/rtmask_validation
-upstream_commit: 8f7a47e115c3557ca7ca824a836b7cb27b95cac3
-synced_on: 2026-05-04
+upstream_commit: 150ac59dcafbb7e31d9e6a07030eb2cf51968d38
+synced_on: 2026-11-06
 notes: |
-  Initial vendor for v0.1. Vendored modules cover the 7 closed-planar primitives
-  (sphere, cube, cylinder, ellipsoid, torus, hollow sphere, hollow cylinder), the
-  synthetic reference-CT builder, partial-volume voxelizer, RTSTRUCT writer, and
-  closed-shape metrics (Dice / volume / Surface DSC / Hausdorff / MSD). Excluded:
-  POINT and OPEN_NONPLANAR primitives, point/curve/arc-length metrics, the
-  benchmark harness, public dataset readers.
+  First full re-sync since v0.1 (8f7a47e, 2026-05-04), to pick up the standard Contour
+  Geometric Type spelling CLOSEDPLANAR_XOR (was CLOSED_PLANAR_XOR) and the non-standard
+  labelling of CLOSED_NONPLANAR. The vendored module set is unchanged. The v0.1 copies were
+  hand-trimmed, so this sync also restores upstream docstrings verbatim, and brings in the
+  additive any_overlap_mask / reference_volume_mm3 / surface_dsc helpers and upstream's
+  RTSTRUCT branding (Manufacturer "rtmask_validation", OperatorsName). The generated
+  reference CT and ground-truth masks are byte-identical to v0.1's.

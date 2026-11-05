@@ -1,4 +1,31 @@
-"""Hollow primitives via multi-contour CLOSED_PLANAR (vendored from rtmask_validation)."""
+"""Hollowed primitives -- shapes with an interior void.
+
+There are three ways to encode a shape with holes in an RTSTRUCT
+(see also `VerificationMethodology.md` Section 3.2):
+
+1. **Multi-contour CLOSED_PLANAR (implicit XOR).** Two coplanar CLOSED_PLANAR
+   contours per slice (outer + inner), read with the even-odd fill rule. Almost
+   every TPS supports this, but it is a vendor convention. The standard does not
+   define it.
+2. **CLOSEDPLANAR_XOR.** Coplanar contours tagged with the XOR value, which the
+   standard defines (PS3.3 C.8.8.6.3) to be combined by XOR. The value has no
+   underscore between CLOSED and PLANAR. It was added by CP-2037 and first
+   published in PS3.3 2021a, and fewer tools support it.
+3. **Keyhole.** A single CLOSED_PLANAR contour that cuts into the void along a
+   zero-width channel. The standard defines this one too.
+
+This module ships the multi-contour CLOSED_PLANAR encoding (option 1). The
+``geometric_type`` field on each primitive is :attr:`GeometricType.CLOSED_PLANAR`,
+and the writer emits two coplanar contours per shell-slice. A future iteration may
+add CLOSEDPLANAR_XOR variants for tools that handle the standard encoding. (The
+module name keeps its historical spelling.)
+
+Primitives in this module:
+
+* :class:`HollowSphere`   -- a sphere with a smaller concentric spherical cavity.
+* :class:`HollowCylinder` -- a "straw" / open-ended hollow cylinder. The wall has
+  fixed inner and outer radii along the cylinder's full height.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +48,14 @@ _CIRCLE_ANGLES = 64
 
 @dataclass
 class HollowSphere(AnalyticalPrimitive):
+    """A sphere of outer radius ``outer_radius`` containing a concentric spherical
+    cavity of radius ``inner_radius``.
+
+    Volume = 4/3 pi (R^3 - r^3). On slices that cut through the cavity the writer
+    emits two CLOSED_PLANAR contours (outer ring + inner ring); on slices that miss
+    the cavity but hit the shell, only the outer contour is emitted.
+    """
+
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     outer_radius: float = 2.0
     inner_radius: float = 1.0
@@ -122,6 +157,14 @@ class HollowSphere(AnalyticalPrimitive):
 
 @dataclass
 class HollowCylinder(AnalyticalPrimitive):
+    """A "straw": a z-axis cylinder of outer radius ``outer_radius`` and height
+    ``height``, with a concentric cylindrical cavity of inner radius ``inner_radius``
+    running through the full height.
+
+    Volume = pi (R^2 - r^2) h. Each slice within +/- h/2 of the center emits an
+    annulus (two coplanar CLOSED_PLANAR circles).
+    """
+
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     outer_radius: float = 2.0
     inner_radius: float = 1.0
