@@ -1,4 +1,19 @@
-"""CLOSED_PLANAR primitives (vendored from rtmask_validation)."""
+"""CLOSED_PLANAR primitives.
+
+This module covers shapes encoded as one closed coplanar polyline per slice on each
+slice the shape intersects. Annular cross-sections (e.g., Torus) emit two coplanar
+contours per slice -- both with ``ContourGeometricType = CLOSED_PLANAR``, relying on
+the implicit-XOR convention that almost every TPS supports.
+
+Primitives in this module:
+
+* :class:`Sphere`    -- volume = 4/3 pi r^3
+* :class:`Box`       -- axis-aligned rectangular box (Cube is a thin wrapper)
+* :class:`Cube`      -- isotropic box
+* :class:`Cylinder`  -- z-axis-aligned right circular cylinder
+* :class:`Ellipsoid` -- axis-aligned ellipsoid
+* :class:`Torus`     -- z-axis-aligned torus (annular cross-sections)
+"""
 
 from __future__ import annotations
 
@@ -15,10 +30,13 @@ except ImportError:  # pragma: no cover
 from ..common.coords import Geometry
 from .base import AnalyticalPrimitive, ContourItem, GeometricType
 
+# Shared sampling parameters: keeps every primitive consistent with Sphere's
+# convention (which the user has validated in their TPS).
 _CIRCLE_ANGLES = 64
 
 
 def _slice_z_coords(geometry: Geometry) -> np.ndarray:
+    """Return the physical z-coordinate of every slice in the reference grid."""
     sz = geometry.spacing[2]
     n_slices = geometry.size[2]
     return np.array(
@@ -28,6 +46,15 @@ def _slice_z_coords(geometry: Geometry) -> np.ndarray:
 
 @dataclass
 class Sphere(AnalyticalPrimitive):
+    """A sphere of radius ``radius`` centered at ``center`` (physical mm).
+
+    Examples
+    --------
+    >>> s = Sphere(name="sphere_r20", center=(256.0, 256.0, 100.0), radius=20.0)
+    >>> abs(s.analytical_volume() - (4 / 3) * math.pi * 8000) < 1e-9
+    True
+    """
+
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     radius: float = 1.0
     geometric_type: GeometricType = field(init=False, default=GeometricType.CLOSED_PLANAR)
@@ -100,6 +127,12 @@ class Sphere(AnalyticalPrimitive):
 
 @dataclass
 class Box(AnalyticalPrimitive):
+    """Axis-aligned rectangular box of dimensions ``size`` (w_x, w_y, w_z) centered at ``center``.
+
+    Each axial slice that the box intersects emits a single 4-corner CLOSED_PLANAR
+    rectangle. A :class:`Cube` is a Box with all three side lengths equal.
+    """
+
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     size: tuple[float, float, float] = (1.0, 1.0, 1.0)
     geometric_type: GeometricType = field(init=False, default=GeometricType.CLOSED_PLANAR)
@@ -173,11 +206,17 @@ class Box(AnalyticalPrimitive):
 
 
 def Cube(name: str, center: tuple[float, float, float], side_length: float) -> Box:
+    """Convenience constructor: a Box with all three side lengths equal to ``side_length``."""
     return Box(name=name, center=center, size=(side_length, side_length, side_length))
 
 
 @dataclass
 class Cylinder(AnalyticalPrimitive):
+    """A right circular cylinder aligned to the z-axis.
+
+    Volume = pi r^2 h. Each slice within +/- h/2 of the center emits a single circle.
+    """
+
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     radius: float = 1.0
     height: float = 1.0
@@ -251,6 +290,12 @@ class Cylinder(AnalyticalPrimitive):
 
 @dataclass
 class Ellipsoid(AnalyticalPrimitive):
+    """An axis-aligned ellipsoid with semi-axes (a, b, c).
+
+    Volume = 4/3 pi a b c. Each axial slice within +/- c of the center emits an
+    ellipse with semi-axes ``a * sqrt(1 - (dz/c)^2)`` and ``b * sqrt(1 - (dz/c)^2)``.
+    """
+
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     semi_axes: tuple[float, float, float] = (1.0, 1.0, 1.0)
     geometric_type: GeometricType = field(init=False, default=GeometricType.CLOSED_PLANAR)
@@ -326,6 +371,15 @@ class Ellipsoid(AnalyticalPrimitive):
 
 @dataclass
 class Torus(AnalyticalPrimitive):
+    """A torus aligned to the z-axis: a circle of minor radius ``minor_radius`` swept
+    around the z-axis at major radius ``major_radius``.
+
+    Volume = 2 pi^2 R r^2. Each axial slice within +/- r of the center emits an
+    *annulus* (two coplanar circles): outer radius ``R + sqrt(r^2 - dz^2)`` and inner
+    radius ``R - sqrt(r^2 - dz^2)``. The two contours are emitted as separate
+    CLOSED_PLANAR items, leveraging the implicit-XOR convention.
+    """
+
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     major_radius: float = 1.0
     minor_radius: float = 0.5
