@@ -3,7 +3,7 @@
 Exit codes:
     0   all PASS (or generate succeeded)
     1   any FAIL / MISSING / GEOMETRY_MISMATCH (verify only)
-    2   usage / IO error
+    2   usage / IO error, or fixture ground truth that fails its manifest hash check
 """
 
 from __future__ import annotations
@@ -14,9 +14,10 @@ from pathlib import Path
 
 from . import __version__
 from .generate import GenerateOptions, generate_fixture
+from .manifest import read_manifest
 from .report import print_report, write_json
 from .thresholds import load_config
-from .verify import Report, verify_predictions
+from .verify import Report, verify_fixture, verify_predictions
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -69,11 +70,29 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Directory containing <roi>.nii.gz files produced by your tool.",
     )
-    v.add_argument(
-        "--groundtruth",
-        required=True,
+    truth = v.add_mutually_exclusive_group(required=True)
+    truth.add_argument(
+        "--fixture",
         type=Path,
-        help="Directory containing the ground-truth <roi>.nii.gz files (typically <fixture>/groundtruth).",
+        help=(
+            "Fixture directory written by `generate` (preferred). Its manifest.json "
+            "supplies the ROI list; ground-truth hashes are checked before scoring."
+        ),
+    )
+    truth.add_argument(
+        "--groundtruth",
+        type=Path,
+        help=(
+            "Directory containing the ground-truth <roi>.nii.gz files (typically "
+            "<fixture>/groundtruth). The v0.1 form: no manifest, no hash check."
+        ),
+    )
+    v.add_argument(
+        "--bundle",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="Score only this bundle (repeatable; requires --fixture). Default: all bundles.",
     )
     v.add_argument(
         "--config",
@@ -103,13 +122,15 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         n_quadrature=int(args.n_quadrature),
     )
     out = generate_fixture(args.out_dir, options=options)
+    manifest = read_manifest(out)
     print(f"fixture written to {out}")
-    print(f"  CT series        : {out / 'refct'}")
-    print(f"  RTSTRUCT         : {out / 'rtstruct' / 'primitives_planar.dcm'}")
-    print(f"  ground-truth dir : {out / 'groundtruth'}")
+    print(f"  CT series        : {out / manifest.refct_dir}")
+    for name, bundle in manifest.bundles.items():
+        print(f"  RTSTRUCT {name:<8}: {out / bundle.rtstruct_path}  ({len(bundle.rois)} ROIs)")
+    print(f"  ground-truth dir : {out / manifest.groundtruth_dir}")
     print(f"  manifest         : {out / 'manifest.json'}")
     print(f"  next: run your tool, then `rtmask-conformance verify --predictions <dir> "
-          f"--groundtruth {out / 'groundtruth'}`")
+          f"--fixture {out}`")
     return 0
 
 
@@ -120,16 +141,35 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
+    if args.bundle and args.fixture is None:
+        print("error: --bundle requires --fixture", file=sys.stderr)
+        return 2
+
     try:
-        report: Report = verify_predictions(
-            predictions_dir=args.predictions,
-            groundtruth_dir=args.groundtruth,
-            config=config,
-        )
-    except FileNotFoundError as e:
+        if args.fixture is not None:
+            report: Report = verify_fixture(
+                predictions_dir=args.predictions,
+                fixture_dir=args.fixture,
+                config=config,
+                bundles=args.bundle,
+            )
+        else:
+            report = verify_predictions(
+                predictions_dir=args.predictions,
+                groundtruth_dir=args.groundtruth,
+                config=config,
+            )
+    except (FileNotFoundError, ValueError) as e:  # FixtureIntegrityError is a ValueError
         print(f"error: {e}", file=sys.stderr)
         return 2
 
+    if report.fixture is not None:
+        f = report.fixture
+        print(
+            f"fixture {f['path']}  rtmask-conformance {f['package_version']} "
+            f"({f['git_sha']})  n_quadrature={f['n_quadrature']}  "
+            f"bundles={','.join(f['bundles'])}"
+        )
     print_report(report)
     if args.report_json is not None:
         write_json(report, args.report_json)

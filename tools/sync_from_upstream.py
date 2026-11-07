@@ -9,8 +9,18 @@ This copies the minimal set of modules needed for the conformance suite, then
 records the upstream commit hash in ``tools/UPSTREAM_VERSION.txt``. Run any time
 you want to pull bug fixes or behavior improvements from upstream.
 
-The script does NOT touch the conformance-specific layer (``cli.py``,
-``generate.py``, ``verify.py``, etc.) — only the ``_vendor/`` subpackage.
+The script does NOT touch the conformance-specific layer — only the
+``_vendor/`` subpackage, plus ``tools/UPSTREAM_VERSION.txt``. Every write goes
+through :func:`_guarded`, which refuses any other destination.
+
+Suite-native layer (hand-edited, never written by this script):
+
+* ``src/rtmask_conformance/*.py`` — ``_roi_set.py`` (bundles), ``generate.py``,
+  ``verify.py``, ``manifest.py``, ``cli.py``, ``report.py``, ``evaluator.py``,
+  ``thresholds.py``, ``__init__.py``
+* ``src/rtmask_conformance/primitives/`` — suite-native analytical primitives
+* ``src/rtmask_conformance/data/`` — shipped thresholds and tool-author README
+* ``src/rtmask_conformance/tests/``
 """
 
 from __future__ import annotations
@@ -37,6 +47,20 @@ FILES_TO_VENDOR: list[tuple[str, str]] = [
     ("rtstruct/pydicom_writer.py", "rtstruct/pydicom_writer.py"),
     # benchmark/metrics.py needs a slim — handled separately below
 ]
+
+
+class UnsafeDestinationError(RuntimeError):
+    """A write was aimed outside ``_vendor/`` (and is not the version file)."""
+
+
+def _guarded(dst: Path, vendor_root: Path, version_file: Path) -> Path:
+    """Return ``dst`` if it lies inside ``vendor_root`` or is ``version_file``, else raise."""
+    resolved = dst.resolve()
+    if resolved == version_file.resolve() or resolved.is_relative_to(vendor_root.resolve()):
+        return dst
+    raise UnsafeDestinationError(
+        f"refusing to write {resolved}: sync_from_upstream writes only under {vendor_root}"
+    )
 
 
 def _slim_metrics(src_text: str) -> str:
@@ -87,11 +111,21 @@ def main() -> int:
     if not vendor_root.exists():
         print(f"error: {vendor_root} missing — run from a populated repo", file=sys.stderr)
         return 2
+    version_file = repo_root / "tools" / "UPSTREAM_VERSION.txt"
+
+    # Check every destination before writing anything.
+    try:
+        for _, dst_rel in FILES_TO_VENDOR:
+            _guarded(vendor_root / dst_rel, vendor_root, version_file)
+        dst_metrics = _guarded(vendor_root / "metrics.py", vendor_root, version_file)
+    except UnsafeDestinationError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
     # Plain copies.
     for src_rel, dst_rel in FILES_TO_VENDOR:
         src = upstream_pkg / src_rel
-        dst = vendor_root / dst_rel
+        dst = _guarded(vendor_root / dst_rel, vendor_root, version_file)
         if not src.exists():
             print(f"error: upstream file missing: {src}", file=sys.stderr)
             return 2
@@ -101,7 +135,6 @@ def main() -> int:
 
     # Slimmed metrics.
     src_metrics = upstream_pkg / "benchmark" / "metrics.py"
-    dst_metrics = vendor_root / "metrics.py"
     metrics_slim = _slim_metrics(src_metrics.read_text(encoding="utf-8"))
     dst_metrics.write_text(metrics_slim, encoding="utf-8")
     print("copied  benchmark/metrics.py (slimmed to closed-shape subset)")
@@ -114,8 +147,7 @@ def main() -> int:
     except subprocess.CalledProcessError:
         commit = "UNKNOWN"
 
-    version_file = repo_root / "tools" / "UPSTREAM_VERSION.txt"
-    version_file.write_text(
+    _guarded(version_file, vendor_root, version_file).write_text(
         f"upstream_repo: https://github.com/brianmanderson/Dicom_RT_Images_Csharp\n"
         f"upstream_path: PythonCode/src/rtmask_validation\n"
         f"upstream_commit: {commit}\n"

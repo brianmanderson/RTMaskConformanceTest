@@ -1,14 +1,16 @@
-"""Generate a conformance fixture: synthetic CT + RTSTRUCT + analytic GT NIfTIs.
+"""Generate a conformance fixture: synthetic CT + RTSTRUCTs + analytic GT NIfTIs.
 
 The output directory layout matches what ``verify`` (and the consuming tool)
 expects:
 
     <out_dir>/
       refct/                              200 DICOM CT slices
-      rtstruct/primitives_planar.dcm      single RTSTRUCT with all 7 ROIs
-      groundtruth/<roi>.nii.gz            7 binary masks (uint8, PV >= 0.5)
-      specs/<roi>.json                    analytic spec metadata
-      manifest.json                       version + ROI list + sha256s
+      rtstruct/primitives_<bundle>.dcm    one RTSTRUCT per populated bundle
+                                          (v0.2: only ``planar``, all 7 ROIs)
+      groundtruth/<roi>.nii.gz            binary masks (uint8, PV >= 0.5) for
+                                          every ROI whose truth_kind is binary_mask
+      specs/<roi>.json                    analytic spec metadata + bundle fields
+      manifest.json                       bundles, ROIs, sha256s, generator settings
       README_FOR_TOOL_AUTHOR.md           drop-in instructions for converters
 """
 
@@ -21,12 +23,21 @@ from importlib.resources import files
 from pathlib import Path
 
 from . import __version__
-from ._roi_set import CONFORMANCE_ROIS, build_conformance_primitives
+from ._roi_set import BUNDLES
 from ._vendor.common.io import sha256_file, write_nifti
 from ._vendor.groundtruth.partial_volume import binary_threshold, partial_volume_mask
 from ._vendor.refimage.build_reference_ct import ReferenceCTSpec, build_reference_ct
 from ._vendor.rtstruct.pydicom_writer import build_rtstruct
-from .manifest import MANIFEST_VERSION, FixtureManifest, write_manifest
+from .manifest import (
+    MANIFEST_VERSION,
+    BundleEntry,
+    FixtureManifest,
+    RoiEntry,
+    package_git_sha,
+    write_manifest,
+)
+
+PV_THRESHOLD: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -36,12 +47,18 @@ class GenerateOptions:
     n_quadrature: int = 8
 
 
+def rtstruct_relpath(bundle: str) -> str:
+    """Fixture-relative path of a bundle's RTSTRUCT."""
+    return f"rtstruct/primitives_{bundle}.dcm"
+
+
 def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None) -> Path:
     """Build a complete fixture under ``out_dir`` and return the directory path.
 
     Idempotent: re-running with the same options overwrites existing files
     deterministically (UIDs are derived from a fixed salt, voxel content is a
-    pure function of geometry).
+    pure function of geometry). The RTSTRUCT's creation date and time are the
+    only wall-clock values.
     """
     options = options or GenerateOptions()
     out = Path(out_dir).resolve()
@@ -57,46 +74,75 @@ def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None
     spec = ReferenceCTSpec(voxel_size=options.voxel_size, size=options.size)
     geometry = build_reference_ct(refct_dir, spec=spec)
 
-    primitives = build_conformance_primitives()
-
-    rtss_path = rtstruct_dir / "primitives_planar.dcm"
-    build_rtstruct(
-        primitives=primitives,
-        ref_image_folder=refct_dir,
-        out_path=rtss_path,
-        structure_set_label="RTMASK_CONFORM",
-    )
-
-    groundtruth_sha256: dict[str, str] = {}
-    for primitive in primitives:
-        fractions = partial_volume_mask(primitive, geometry, n_quadrature=options.n_quadrature)
-        binary = binary_threshold(fractions, threshold=0.5)
-        gt_path = gt_dir / f"{primitive.name}.nii.gz"
-        write_nifti(binary, geometry, gt_path)
-        groundtruth_sha256[primitive.name] = sha256_file(gt_path)
-
-        spec_dict = primitive.to_spec_dict()
-        spec_dict["pv_quadrature_per_axis"] = options.n_quadrature
-        spec_dict["pv_threshold"] = 0.5
-        (specs_dir / f"{primitive.name}.json").write_text(
-            json.dumps(spec_dict, indent=2), encoding="utf-8"
+    bundle_entries: dict[str, BundleEntry] = {}
+    roi_entries: dict[str, RoiEntry] = {}
+    for bundle, rois in BUNDLES.items():
+        rtss_rel = rtstruct_relpath(bundle)
+        rtss_path = out / rtss_rel
+        build_rtstruct(
+            primitives=[roi.primitive for roi in rois],
+            ref_image_folder=refct_dir,
+            out_path=rtss_path,
+            structure_set_label="RTMASK_CONFORM",
         )
+        bundle_entries[bundle] = BundleEntry(
+            rtstruct_path=rtss_rel,
+            rtstruct_sha256=sha256_file(rtss_path),
+            rois=[roi.name for roi in rois],
+        )
+
+        for roi in rois:
+            truth_rel: str | None = None
+            truth_sha: str | None = None
+            if roi.truth_kind == "binary_mask":
+                fractions = partial_volume_mask(
+                    roi.primitive, geometry, n_quadrature=options.n_quadrature
+                )
+                binary = binary_threshold(fractions, threshold=PV_THRESHOLD)
+                truth_rel = f"groundtruth/{roi.name}.nii.gz"
+                write_nifti(binary, geometry, out / truth_rel)
+                truth_sha = sha256_file(out / truth_rel)
+            elif roi.truth_kind != "none":
+                raise NotImplementedError(
+                    f"{roi.name}: no ground-truth writer for truth_kind {roi.truth_kind!r}"
+                )
+
+            spec_dict = roi.primitive.to_spec_dict()
+            spec_dict["pv_quadrature_per_axis"] = options.n_quadrature
+            spec_dict["pv_threshold"] = PV_THRESHOLD
+            spec_dict["bundle"] = bundle
+            spec_dict["geometric_type"] = roi.geometric_type.value
+            spec_dict["truth_kind"] = roi.truth_kind
+            spec_dict["graded"] = roi.graded
+            spec_rel = f"specs/{roi.name}.json"
+            (out / spec_rel).write_text(json.dumps(spec_dict, indent=2), encoding="utf-8")
+
+            roi_entries[roi.name] = RoiEntry(
+                bundle=bundle,
+                geometric_type=roi.geometric_type.value,
+                truth_kind=roi.truth_kind,
+                graded=roi.graded,
+                truth_path=truth_rel,
+                truth_sha256=truth_sha,
+                spec_path=spec_rel,
+                expected_prediction=f"{roi.name}.nii.gz" if roi.graded else None,
+            )
 
     manifest = FixtureManifest(
         manifest_version=MANIFEST_VERSION,
         package_version=__version__,
+        git_sha=package_git_sha(),
+        n_quadrature=options.n_quadrature,
+        pv_threshold=PV_THRESHOLD,
         geometry={
             "origin": list(geometry.origin),
             "spacing": list(geometry.spacing),
             "size": list(geometry.size),
             "direction": list(geometry.direction),
         },
-        rois=list(CONFORMANCE_ROIS),
-        expected_predictions=[f"{name}.nii.gz" for name in CONFORMANCE_ROIS],
-        rtstruct_path="rtstruct/primitives_planar.dcm",
-        rtstruct_sha256=sha256_file(rtss_path),
+        bundles=bundle_entries,
+        rois=roi_entries,
         groundtruth_dir="groundtruth",
-        groundtruth_sha256=groundtruth_sha256,
         refct_dir="refct",
     )
     write_manifest(manifest, out)

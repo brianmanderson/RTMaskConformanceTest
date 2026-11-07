@@ -45,10 +45,13 @@ jobs:
       - name: Run tests
         run: pytest -v
 
-      - name: CLI smoke test (generate then verify)
+      - name: CLI smoke test (generate then verify, --fixture and --groundtruth forms)
         shell: bash
         run: |
           python -m rtmask_conformance.cli generate ./fixture --n-quadrature 2
+          python -m rtmask_conformance.cli verify \
+              --predictions ./fixture/groundtruth \
+              --fixture ./fixture
           python -m rtmask_conformance.cli verify \
               --predictions ./fixture/groundtruth \
               --groundtruth ./fixture/groundtruth
