@@ -9,7 +9,9 @@ few seconds in CI.
 The second half covers the v0.2 fixture layout on one shared fixture: the
 ``planar`` bundle is byte-identical to v0.1, the manifest is v2, ``verify
 --fixture`` passes 7/7 on the ground truth, and tampered ground truth is
-caught.
+caught. Its content (voxels, geometry, parsed contours) is also checked against
+one Windows-taken list on every platform; ``data/planar_content_reference.npz``
+holds the data that lets a mismatch name the differing voxels or contours.
 
 Skipped by default when ``RTMASK_CONFORMANCE_SKIP_E2E=1`` is set; otherwise
 runs unconditionally.
@@ -18,6 +20,7 @@ runs unconditionally.
 from __future__ import annotations
 
 import datetime
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -25,9 +28,11 @@ import os
 import shutil
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import numpy as np
+import pydicom
 import pytest
 import SimpleITK as sitk
 
@@ -112,6 +117,48 @@ V01_PLANAR_SHA256_BY_PLATFORM: dict[str, dict[str, str]] = {
 
 V01_PLANAR_FILES: list[str] = sorted(V01_PLANAR_SHA256_BY_PLATFORM["win32"])
 
+# SHA-256 of the planar bundle's CONTENT (same fixture as above), one list for
+# every platform, taken on Windows. "mask" hashes the decoded voxel array as
+# uint8 plus the image geometry and pixel type; "contours" hashes the parsed
+# RTSTRUCT content of that ROI (name, then per contour its geometric type,
+# point count and ContourData floats). See _planar_content_fingerprint.
+PLANAR_CONTENT_SHA256: dict[str, dict[str, str]] = {
+    "sphere": {
+        "mask": "cb55242f02294121b7e169d9676464681676906b395af2b528ee5e09ad69b57a",
+        "contours": "4647792185814b3cc66579e3ee302a39e956d6142048b03d9c37787cbb856ed3",
+    },
+    "cube": {
+        "mask": "8b5f4a4721b308211dee04a0165e0925ce58914a39aa6bfcbfa42e0830699fdc",
+        "contours": "63d66ad32b0a22ed476d97d7ab4f15f69b1c15a863bebb6fb47aaf2423f77f11",
+    },
+    "cylinder": {
+        "mask": "94bddea794bb910a6bea5bf46b4d54aafc349044e1635cc19ff43b25dfb6b177",
+        "contours": "8ba8eb31e6afd4ebd6b9fa7603a1c5b148edce0b384e8f74f3bb52c5267d09b4",
+    },
+    "ellipsoid": {
+        "mask": "25dc408ad08b06091c9eaf2b45b58941051913a6534375be7f4a234f10ffd22a",
+        "contours": "3ee0c57891246baf641c2c3d87b9bfb66974e3801740192b691db6b83fbb23f0",
+    },
+    "torus": {
+        "mask": "33b834c8f9ca26c8effe9e2026ad8c72260fafbcfaff7c90ce45237dd6aa4c50",
+        "contours": "57d236e3646d5aa2366663064885d70747cb33048863346fee1e0dbd3aa61176",
+    },
+    "hollow_sphere": {
+        "mask": "4e4a92e170784c71b5e8130929c62b822c7a4e90e300dcae4f1db7798cddb00f",
+        "contours": "6fd99d6974e02ff10cd0064b56318d95db8c22d53c46cf1297e223eb4baff2c8",
+    },
+    "straw": {
+        "mask": "bc342d072eb48c006a374c536910912562c0e09609e8eaa9425893c734287123",
+        "contours": "a53deb5cc98edf67b2a7960089a9ff907c83b4a21900f0f6a3052d451b3a7bf5",
+    },
+}
+
+# Windows-side diagnostic data for test_planar_bundle_content_identical_across_platforms:
+# run-length-encoded masks (so a mismatch can name the differing voxels),
+# per-contour digests, and serialisation-layer digests (gzip header, decompressed
+# NIfTI bytes, raw ContourData strings, top-level DICOM elements).
+PLANAR_CONTENT_REFERENCE = Path(__file__).parent / "data" / "planar_content_reference.npz"
+
 
 class _FrozenDateTime(datetime.datetime):
     @classmethod
@@ -162,6 +209,123 @@ def _generate_v01_reference(out: Path, n_quadrature: int) -> None:
         fractions = partial_volume_mask(primitive, geometry, n_quadrature=n_quadrature)
         binary = binary_threshold(fractions, threshold=0.5)
         write_nifti(binary, geometry, out / "groundtruth" / f"{primitive.name}.nii.gz")
+
+
+def _mask_runs(flat: np.ndarray) -> np.ndarray:
+    """(start, stop) pairs of the foreground runs of a flattened binary mask."""
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], flat.astype(np.int8), [0]))))
+    return edges.astype(np.int32).reshape(-1, 2)
+
+
+def _mask_from_runs(runs: np.ndarray, n: int) -> np.ndarray:
+    flat = np.zeros(n, dtype=np.uint8)
+    for start, stop in runs:
+        flat[start:stop] = 1
+    return flat
+
+
+def _contour_lines(rtstruct: pydicom.Dataset) -> dict[str, list[str]]:
+    """Per ROI name, one line per contour: type, point count, ContourData floats (repr)."""
+    names = {item.ROINumber: item.ROIName for item in rtstruct.StructureSetROISequence}
+    lines: dict[str, list[str]] = {}
+    for roi_contour in rtstruct.ROIContourSequence:
+        out = lines.setdefault(names[roi_contour.ReferencedROINumber], [])
+        for contour in roi_contour.ContourSequence:
+            floats = " ".join(repr(float(v)) for v in contour.ContourData)
+            out.append(f"{contour.ContourGeometricType}|{contour.NumberOfContourPoints}|{floats}")
+    return lines
+
+
+def _planar_content_fingerprint(fixture: Path) -> dict:
+    """Content hashes of the planar bundle plus the data to diagnose a mismatch."""
+    rtstruct_path = fixture / "rtstruct" / "primitives_planar.dcm"
+    lines = _contour_lines(pydicom.dcmread(rtstruct_path))
+    content: dict[str, dict[str, str]] = {}
+    masks: dict[str, np.ndarray] = {}
+    geometry: dict[str, str] = {}
+    serialisation: dict[str, str] = {}
+    for roi in CONFORMANCE_ROIS:
+        path = fixture / "groundtruth" / f"{roi}.nii.gz"
+        img = sitk.ReadImage(str(path))
+        arr = sitk.GetArrayFromImage(img).astype(np.uint8)
+        geometry[roi] = repr((img.GetOrigin(), img.GetSpacing(), img.GetDirection(),
+                              img.GetSize(), img.GetPixelIDTypeAsString()))
+        masks[roi] = arr
+        h = hashlib.sha256(arr.tobytes())
+        h.update(geometry[roi].encode())
+        roi_lines = "\n".join([roi, *lines.get(roi, [])])
+        content[roi] = {
+            "mask": h.hexdigest(),
+            "contours": hashlib.sha256(roi_lines.encode()).hexdigest(),
+        }
+        raw = path.read_bytes()
+        serialisation[f"gzip_header/{roi}"] = raw[:10].hex()
+        serialisation[f"nifti_decompressed/{roi}"] = hashlib.sha256(
+            gzip.decompress(raw)).hexdigest()
+    # Serialisation layer of the RTSTRUCT, on a fresh read so elements are still raw.
+    ds = pydicom.dcmread(rtstruct_path)
+    for name, dataset in (("meta", ds.file_meta), ("dataset", ds)):
+        for tag in dataset.keys():
+            elem = dataset.get_item(tag)
+            value = elem.value if isinstance(elem.value, bytes) else repr(elem.value).encode()
+            serialisation[f"dicom_{name}/{tag}"] = hashlib.sha256(value).hexdigest()
+    names = {item.ROINumber: item.ROIName for item in ds.StructureSetROISequence}
+    for roi_contour in ds.ROIContourSequence:
+        h = hashlib.sha256()
+        for contour in roi_contour.ContourSequence:
+            h.update(contour.get_item(0x30060050).value)
+        serialisation[f"contour_ds_strings/{names[roi_contour.ReferencedROINumber]}"] = (
+            h.hexdigest())
+    return {
+        "content": content,
+        "masks": masks,
+        "geometry": geometry,
+        "contour_digests": {
+            roi: [hashlib.sha256(line.encode()).hexdigest()[:16] for line in lines.get(roi, [])]
+            for roi in CONFORMANCE_ROIS
+        },
+        "serialisation": serialisation,
+    }
+
+
+def _write_content_reference(fingerprint: dict, out: Path) -> None:
+    """Write the Windows-side diagnostic data (run once by hand, on Windows)."""
+    arrays = {}
+    for roi, arr in fingerprint["masks"].items():
+        arrays[f"mask_runs/{roi}"] = _mask_runs(arr.ravel())
+        arrays[f"mask_shape/{roi}"] = np.array(arr.shape, dtype=np.int64)
+        arrays[f"geometry/{roi}"] = np.array(fingerprint["geometry"][roi])
+        arrays[f"contour_digests/{roi}"] = np.array(fingerprint["contour_digests"][roi])
+    for key, value in fingerprint["serialisation"].items():
+        arrays[f"serialisation/{key}"] = np.array(value)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out, **arrays)
+
+
+def _diagnose_content_mismatch(roi: str, kind: str, fingerprint: dict, ref) -> str:
+    """Name what differs for one ROI, using the Windows-side reference data."""
+    if ref is None:
+        return f"{roi}: {kind} content differs (no reference data to localise it)"
+    if kind == "mask":
+        expected_geometry = str(ref[f"geometry/{roi}"])
+        if fingerprint["geometry"][roi] != expected_geometry:
+            return (f"{roi}: geometry/pixel type differs: {fingerprint['geometry'][roi]} "
+                    f"!= {expected_geometry}")
+        arr = fingerprint["masks"][roi]
+        expected = _mask_from_runs(ref[f"mask_runs/{roi}"], arr.size).reshape(
+            tuple(ref[f"mask_shape/{roi}"]))
+        diff = np.argwhere(arr != expected)
+        first = [(tuple(int(i) for i in idx), int(expected[tuple(idx)]), int(arr[tuple(idx)]))
+                 for idx in diff[:5]]
+        return (f"{roi}: {len(diff)} voxel(s) differ (expected {int(expected.sum())} "
+                f"foreground, got {int(arr.sum())}); first (z, y, x), expected, got: {first}")
+    expected_digests = [str(d) for d in ref[f"contour_digests/{roi}"]]
+    actual_digests = fingerprint["contour_digests"][roi]
+    differing = [i for i, (a, e) in enumerate(zip(actual_digests, expected_digests, strict=False))
+                 if a != e]
+    return (f"{roi}: contour content differs: {len(actual_digests)} contour(s), expected "
+            f"{len(expected_digests)}; {len(differing)} differ in order, first indices "
+            f"{differing[:5]}")
 
 
 pytestmark = pytest.mark.skipif(
@@ -260,6 +424,46 @@ def test_planar_bundle_matches_pinned_v01_hashes(v02_fixture: Path) -> None:
         "if test_planar_bundle_byte_identical_to_v01 passes, a dependency (numpy, "
         "SimpleITK, pydicom, zlib) changed the output, not this package"
     )
+
+
+def test_planar_bundle_content_identical_across_platforms(v02_fixture: Path) -> None:
+    """The planar bundle's content (voxels, geometry, parsed contours) is the same on
+    every platform, whatever the file bytes. A failure names the ROI and what differs;
+    a pass with differing file bytes warns with the serialisation layer that differs.
+    """
+    fingerprint = _planar_content_fingerprint(v02_fixture)
+    ref = np.load(PLANAR_CONTENT_REFERENCE) if PLANAR_CONTENT_REFERENCE.is_file() else None
+    problems = [
+        _diagnose_content_mismatch(roi, kind, fingerprint, ref)
+        for roi, expected in PLANAR_CONTENT_SHA256.items()
+        for kind in ("mask", "contours")
+        if fingerprint["content"][roi][kind] != expected[kind]
+    ]
+    assert sorted(PLANAR_CONTENT_SHA256) == sorted(CONFORMANCE_ROIS)
+    assert not problems, "planar bundle content differs from the Windows reference:\n" + (
+        "\n".join(problems))
+    if ref is None:
+        return
+    expected_serialisation = {
+        key.removeprefix("serialisation/"): str(ref[key])
+        for key in ref.files if key.startswith("serialisation/")
+    }
+    actual = fingerprint["serialisation"]
+    differing = sorted(
+        key for key in set(expected_serialisation) | set(actual)
+        if expected_serialisation.get(key) != actual.get(key)
+    )
+    if differing:
+        detail = [
+            f"{key}: {expected_serialisation.get(key)} -> {actual.get(key)}"
+            if key.startswith("gzip_header/") else key
+            for key in differing
+        ]
+        warnings.warn(
+            "planar bundle content matches the Windows reference but these serialisation "
+            "layers differ:\n" + "\n".join(detail),
+            stacklevel=1,
+        )
 
 
 def test_manifest_v2_describes_the_fixture(v02_fixture: Path) -> None:
