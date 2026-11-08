@@ -9,8 +9,9 @@ few seconds in CI.
 The second half covers the v0.2 fixture layout on one shared fixture: the
 ``planar`` bundle is byte-identical to v0.1, the manifest is v2, ``verify
 --fixture`` passes 7/7 on the ground truth, and tampered ground truth is
-caught. Its content (voxels, geometry, parsed contours) is also checked against
-one Windows-taken list on every platform; ``data/planar_content_reference.npz``
+caught. Its content (voxels, geometry, contour structure exactly; contour
+coordinates within a stated tolerance) is also checked against one
+Windows-taken reference on every platform; ``data/planar_content_reference.npz``
 holds the data that lets a mismatch name the differing voxels or contours.
 
 Skipped by default when ``RTMASK_CONFORMANCE_SKIP_E2E=1`` is set; otherwise
@@ -120,37 +121,45 @@ V01_PLANAR_FILES: list[str] = sorted(V01_PLANAR_SHA256_BY_PLATFORM["win32"])
 
 # SHA-256 of the planar bundle's CONTENT (same fixture as above), one list for
 # every platform, taken on Windows. "mask" hashes the decoded voxel array as
-# uint8 plus the image geometry and pixel type; "contours" hashes the parsed
-# RTSTRUCT content of that ROI (name, then per contour its geometric type,
-# point count and ContourData floats). See _planar_content_fingerprint.
+# uint8 plus the image geometry and pixel type; "contour_structure" hashes the
+# ROI name and, per contour, its geometric type and point count. The contour
+# coordinates are compared point by point against the reference file below,
+# within CONTOUR_TOLERANCE_MM. See _planar_content_fingerprint.
 PLANAR_CONTENT_SHA256: dict[str, dict[str, str]] = {
     "sphere": {
         "mask": "cb55242f02294121b7e169d9676464681676906b395af2b528ee5e09ad69b57a",
-        "contours": "4647792185814b3cc66579e3ee302a39e956d6142048b03d9c37787cbb856ed3",
+        "contour_structure":
+            "6fa4decd0c8b9da455b4773939b74c4aa99125b123924a0aeaacde246a46ecf7",
     },
     "cube": {
         "mask": "8b5f4a4721b308211dee04a0165e0925ce58914a39aa6bfcbfa42e0830699fdc",
-        "contours": "63d66ad32b0a22ed476d97d7ab4f15f69b1c15a863bebb6fb47aaf2423f77f11",
+        "contour_structure":
+            "1f713e6cdaa3c1ef5815b4607c307c3c34708dde37b074010e885fff95912408",
     },
     "cylinder": {
         "mask": "94bddea794bb910a6bea5bf46b4d54aafc349044e1635cc19ff43b25dfb6b177",
-        "contours": "8ba8eb31e6afd4ebd6b9fa7603a1c5b148edce0b384e8f74f3bb52c5267d09b4",
+        "contour_structure":
+            "c6f5a0643fdc9cca416a84765c04d8ebe6c399964b990b6d1f9fe721fc81ae35",
     },
     "ellipsoid": {
         "mask": "25dc408ad08b06091c9eaf2b45b58941051913a6534375be7f4a234f10ffd22a",
-        "contours": "3ee0c57891246baf641c2c3d87b9bfb66974e3801740192b691db6b83fbb23f0",
+        "contour_structure":
+            "b174dc34a66105778119d4f90371ab243af8c948c20e36df106c8614e62c7e74",
     },
     "torus": {
         "mask": "33b834c8f9ca26c8effe9e2026ad8c72260fafbcfaff7c90ce45237dd6aa4c50",
-        "contours": "57d236e3646d5aa2366663064885d70747cb33048863346fee1e0dbd3aa61176",
+        "contour_structure":
+            "6644847e9b6f9b585814c434e424b9c8edbe9c3975dfee934bcf9b05b7b5017a",
     },
     "hollow_sphere": {
         "mask": "4e4a92e170784c71b5e8130929c62b822c7a4e90e300dcae4f1db7798cddb00f",
-        "contours": "6fd99d6974e02ff10cd0064b56318d95db8c22d53c46cf1297e223eb4baff2c8",
+        "contour_structure":
+            "4669ba07f404081d2c0dd7695ce9a51eb210832596327c8560d2c8f619ff553e",
     },
     "straw": {
         "mask": "bc342d072eb48c006a374c536910912562c0e09609e8eaa9425893c734287123",
-        "contours": "a53deb5cc98edf67b2a7960089a9ff907c83b4a21900f0f6a3052d451b3a7bf5",
+        "contour_structure":
+            "c05eed9c46f7039b0ca3900314d3b3718b5bedc531e8352be7a8a209a7b82359",
     },
 }
 
@@ -159,6 +168,13 @@ PLANAR_CONTENT_SHA256: dict[str, dict[str, str]] = {
 # per-contour digests, and serialisation-layer digests (gzip header, decompressed
 # NIfTI bytes, raw ContourData strings, top-level DICOM elements).
 PLANAR_CONTENT_REFERENCE = Path(__file__).parent / "data" / "planar_content_reference.npz"
+
+# Absolute tolerance for contour coordinates across platforms. The vendored
+# RTSTRUCT writer emits ContourData with up to 16 significant digits, and libm
+# differences between platforms reach the file at the 1e-12 mm level (the last
+# printed digit of a few coordinates). Once the writer is re-vendored with
+# 12-significant-digit ContourData, this comparison returns to exact.
+CONTOUR_TOLERANCE_MM = 1e-9
 
 
 class _FrozenDateTime(datetime.datetime):
@@ -254,10 +270,10 @@ def _planar_content_fingerprint(fixture: Path) -> dict:
         masks[roi] = arr
         h = hashlib.sha256(arr.tobytes())
         h.update(geometry[roi].encode())
-        roi_lines = "\n".join([roi, *lines.get(roi, [])])
+        structure = "\n".join([roi, *(line.rsplit("|", 1)[0] for line in lines.get(roi, []))])
         content[roi] = {
             "mask": h.hexdigest(),
-            "contours": hashlib.sha256(roi_lines.encode()).hexdigest(),
+            "contour_structure": hashlib.sha256(structure.encode()).hexdigest(),
         }
         raw = path.read_bytes()
         serialisation[f"gzip_header/{roi}"] = raw[:10].hex()
@@ -331,19 +347,44 @@ def _diagnose_content_mismatch(roi: str, kind: str, fingerprint: dict, ref) -> s
                  for idx in diff[:5]]
         return (f"{roi}: {len(diff)} voxel(s) differ (expected {int(expected.sum())} "
                 f"foreground, got {int(arr.sum())}); first (z, y, x), expected, got: {first}")
-    expected_digests = [str(d) for d in ref[f"contour_digests/{roi}"]]
-    actual_digests = fingerprint["contour_digests"][roi]
-    differing = [i for i, (a, e) in enumerate(zip(actual_digests, expected_digests, strict=False))
-                 if a != e]
-    lines = [f"{roi}: contour content differs: {len(actual_digests)} contour(s), expected "
-             f"{len(expected_digests)}; {len(differing)} differ in order, indices {differing}"]
     expected_ds = _reference_contour_ds(ref).get(roi, [])
     actual_ds = fingerprint["contour_ds"].get(roi, [])
-    for i in differing:
-        if i >= len(expected_ds) or i >= len(actual_ds):
-            continue
-        lines.append("    " + _describe_contour_difference(i, expected_ds[i], actual_ds[i]))
-    return "\n".join(lines)
+    counts = [(i, len(a.split("\\")) // 3, len(e.split("\\")) // 3)
+              for i, (a, e) in enumerate(zip(actual_ds, expected_ds, strict=False))]
+    differing = [(i, a, e) for i, a, e in counts if a != e]
+    return (f"{roi}: contour structure differs: {len(actual_ds)} contour(s), expected "
+            f"{len(expected_ds)}; point counts (contour, got, expected) differ on "
+            f"{differing[:5]}{' ...' if len(differing) > 5 else ''} (or a geometric type differs)")
+
+
+def _compare_contour_coordinates(fingerprint: dict, ref) -> tuple[list[str], dict]:
+    """Compare every contour's coordinates with the reference, per point.
+
+    Returns the contours whose coordinates differ by more than CONTOUR_TOLERANCE_MM
+    (described in full) and statistics on the exact DS-string differences.
+    """
+    problems: list[str] = []
+    stats = {"strings": 0, "contours": 0, "max_mm": 0.0}
+    expected_by_roi = _reference_contour_ds(ref)
+    for roi in CONFORMANCE_ROIS:
+        expected_ds = expected_by_roi.get(roi, [])
+        for i, (actual_raw, expected_raw) in enumerate(
+                zip(fingerprint["contour_ds"].get(roi, []), expected_ds, strict=False)):
+            if actual_raw == expected_raw:
+                continue
+            actual = actual_raw.split("\\")
+            expected = expected_raw.split("\\")
+            if len(actual) != len(expected):
+                continue  # a point-count difference; the structure hash reports it
+            strings = sum(a != e for a, e in zip(actual, expected, strict=True))
+            max_mm = max(abs(float(a) - float(e)) for a, e in zip(actual, expected, strict=True))
+            stats["strings"] += strings
+            stats["contours"] += 1
+            stats["max_mm"] = max(stats["max_mm"], max_mm)
+            if max_mm > CONTOUR_TOLERANCE_MM:
+                problems.append(f"{roi}: " + _describe_contour_difference(
+                    i, expected_raw, actual_raw) + f" (tolerance {CONTOUR_TOLERANCE_MM!r} mm)")
+    return problems, stats
 
 
 def _reference_contour_ds(ref) -> dict[str, list[str]]:
@@ -492,8 +533,9 @@ def _serialisation_differences(fingerprint: dict, ref) -> list[str]:
 
 
 def test_planar_bundle_content_identical_across_platforms(v02_fixture: Path) -> None:
-    """The planar bundle's content (voxels, geometry, parsed contours) is the same on
-    every platform, whatever the file bytes. A failure names the ROI and what differs;
+    """The planar bundle's content is the same on every platform, whatever the file
+    bytes: voxels, geometry, pixel type and contour structure exactly, contour
+    coordinates within CONTOUR_TOLERANCE_MM. A failure names the ROI and what differs;
     a pass with differing file bytes warns with the serialisation layers that differ.
     """
     fingerprint = _planar_content_fingerprint(v02_fixture)
@@ -501,10 +543,20 @@ def test_planar_bundle_content_identical_across_platforms(v02_fixture: Path) -> 
     problems = [
         _diagnose_content_mismatch(roi, kind, fingerprint, ref)
         for roi, expected in PLANAR_CONTENT_SHA256.items()
-        for kind in ("mask", "contours")
+        for kind in ("mask", "contour_structure")
         if fingerprint["content"][roi][kind] != expected[kind]
     ]
     serialisation = _serialisation_differences(fingerprint, ref)
+    if ref is not None:
+        coordinate_problems, ds = _compare_contour_coordinates(fingerprint, ref)
+        problems += coordinate_problems
+        if ds["strings"]:
+            serialisation.insert(0, (
+                f"ContourData strings differ in {ds['strings']} DS value(s) on "
+                f"{ds['contours']} contour(s); max |difference| {ds['max_mm']!r} mm"))
+    else:
+        warnings.warn(f"{PLANAR_CONTENT_REFERENCE.name} not found; contour coordinates "
+                      "were not compared", stacklevel=1)
     assert sorted(PLANAR_CONTENT_SHA256) == sorted(CONFORMANCE_ROIS)
     assert not problems, (
         "planar bundle content differs from the Windows reference:\n" + "\n".join(problems)
