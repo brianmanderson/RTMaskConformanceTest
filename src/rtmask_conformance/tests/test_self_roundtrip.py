@@ -537,6 +537,12 @@ def test_planar_bundle_content_identical_across_platforms(v02_fixture: Path) -> 
     bytes: voxels, geometry, pixel type and contour structure exactly, contour
     coordinates within CONTOUR_TOLERANCE_MM. A failure names the ROI and what differs;
     a pass with differing file bytes warns with the serialisation layers that differ.
+
+    To regenerate the reference (on Windows only, after a deliberate content change),
+    generate the fixture as ``v02_fixture`` does (frozen clock, ``n_quadrature=2``),
+    call ``_write_content_reference(_planar_content_fingerprint(fixture),
+    PLANAR_CONTENT_REFERENCE)`` and copy the fingerprint's ``"content"`` hashes into
+    PLANAR_CONTENT_SHA256.
     """
     fingerprint = _planar_content_fingerprint(v02_fixture)
     ref = np.load(PLANAR_CONTENT_REFERENCE) if PLANAR_CONTENT_REFERENCE.is_file() else None
