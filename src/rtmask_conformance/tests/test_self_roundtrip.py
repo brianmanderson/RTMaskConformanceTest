@@ -24,6 +24,7 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import lzma
 import os
 import shutil
 import sys
@@ -270,12 +271,15 @@ def _planar_content_fingerprint(fixture: Path) -> dict:
             value = elem.value if isinstance(elem.value, bytes) else repr(elem.value).encode()
             serialisation[f"dicom_{name}/{tag}"] = hashlib.sha256(value).hexdigest()
     names = {item.ROINumber: item.ROIName for item in ds.StructureSetROISequence}
+    contour_ds: dict[str, list[str]] = {}
     for roi_contour in ds.ROIContourSequence:
+        roi = names[roi_contour.ReferencedROINumber]
         h = hashlib.sha256()
         for contour in roi_contour.ContourSequence:
-            h.update(contour.get_item(0x30060050).value)
-        serialisation[f"contour_ds_strings/{names[roi_contour.ReferencedROINumber]}"] = (
-            h.hexdigest())
+            raw = contour.get_item(0x30060050).value
+            h.update(raw)
+            contour_ds.setdefault(roi, []).append(raw.decode("ascii").strip())
+        serialisation[f"contour_ds_strings/{roi}"] = h.hexdigest()
     return {
         "content": content,
         "masks": masks,
@@ -284,6 +288,7 @@ def _planar_content_fingerprint(fixture: Path) -> dict:
             roi: [hashlib.sha256(line.encode()).hexdigest()[:16] for line in lines.get(roi, [])]
             for roi in CONFORMANCE_ROIS
         },
+        "contour_ds": contour_ds,
         "serialisation": serialisation,
     }
 
@@ -298,6 +303,13 @@ def _write_content_reference(fingerprint: dict, out: Path) -> None:
         arrays[f"contour_digests/{roi}"] = np.array(fingerprint["contour_digests"][roi])
     for key, value in fingerprint["serialisation"].items():
         arrays[f"serialisation/{key}"] = np.array(value)
+    # Raw ContourData strings of every contour, xz-compressed (about 130 KB).
+    blob = "\n".join(
+        f"{roi}\t{i}\t{raw}"
+        for roi, contours in fingerprint["contour_ds"].items()
+        for i, raw in enumerate(contours)
+    )
+    arrays["contour_ds_xz"] = np.frombuffer(lzma.compress(blob.encode("ascii")), dtype=np.uint8)
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out, **arrays)
 
@@ -323,9 +335,45 @@ def _diagnose_content_mismatch(roi: str, kind: str, fingerprint: dict, ref) -> s
     actual_digests = fingerprint["contour_digests"][roi]
     differing = [i for i, (a, e) in enumerate(zip(actual_digests, expected_digests, strict=False))
                  if a != e]
-    return (f"{roi}: contour content differs: {len(actual_digests)} contour(s), expected "
-            f"{len(expected_digests)}; {len(differing)} differ in order, first indices "
-            f"{differing[:5]}")
+    lines = [f"{roi}: contour content differs: {len(actual_digests)} contour(s), expected "
+             f"{len(expected_digests)}; {len(differing)} differ in order, indices {differing}"]
+    expected_ds = _reference_contour_ds(ref).get(roi, [])
+    actual_ds = fingerprint["contour_ds"].get(roi, [])
+    for i in differing:
+        if i >= len(expected_ds) or i >= len(actual_ds):
+            continue
+        lines.append("    " + _describe_contour_difference(i, expected_ds[i], actual_ds[i]))
+    return "\n".join(lines)
+
+
+def _reference_contour_ds(ref) -> dict[str, list[str]]:
+    if "contour_ds_xz" not in ref.files:
+        return {}
+    out: dict[str, list[str]] = {}
+    for line in lzma.decompress(ref["contour_ds_xz"].tobytes()).decode("ascii").splitlines():
+        roi, _, raw = line.split("\t")
+        out.setdefault(roi, []).append(raw)
+    return out
+
+
+def _describe_contour_difference(index: int, expected_raw: str, actual_raw: str) -> str:
+    """Point counts, differing DS strings, max |difference| in mm, first differing point."""
+    expected = expected_raw.split("\\")
+    actual = actual_raw.split("\\")
+    n = min(len(expected), len(actual))
+    differing = [k for k in range(n) if expected[k] != actual[k]]
+    head = (f"contour {index}: {len(actual) // 3} point(s), expected {len(expected) // 3}; "
+            f"{len(differing)} of {n} DS string(s) differ")
+    if not differing:
+        return head
+    max_diff = max(abs(float(expected[k]) - float(actual[k])) for k in differing)
+    p = differing[0] // 3
+    first_expected = expected[3 * p:3 * p + 3]
+    first_actual = actual[3 * p:3 * p + 3]
+    return (f"{head}; max |difference| {max_diff!r} mm; first differing point {p}: "
+            f"expected {tuple(float(v) for v in first_expected)!r} "
+            f"(DS {'/'.join(first_expected)}), "
+            f"got {tuple(float(v) for v in first_actual)!r} (DS {'/'.join(first_actual)})")
 
 
 pytestmark = pytest.mark.skipif(
@@ -426,10 +474,27 @@ def test_planar_bundle_matches_pinned_v01_hashes(v02_fixture: Path) -> None:
     )
 
 
+def _serialisation_differences(fingerprint: dict, ref) -> list[str]:
+    """Serialisation layers that differ from the Windows reference (gzip headers in full)."""
+    if ref is None:
+        return []
+    expected = {
+        key.removeprefix("serialisation/"): str(ref[key])
+        for key in ref.files if key.startswith("serialisation/")
+    }
+    actual = fingerprint["serialisation"]
+    return [
+        f"{key}: {expected.get(key)} -> {actual.get(key)}"
+        if key.startswith("gzip_header/") else key
+        for key in sorted(set(expected) | set(actual))
+        if expected.get(key) != actual.get(key)
+    ]
+
+
 def test_planar_bundle_content_identical_across_platforms(v02_fixture: Path) -> None:
     """The planar bundle's content (voxels, geometry, parsed contours) is the same on
     every platform, whatever the file bytes. A failure names the ROI and what differs;
-    a pass with differing file bytes warns with the serialisation layer that differs.
+    a pass with differing file bytes warns with the serialisation layers that differ.
     """
     fingerprint = _planar_content_fingerprint(v02_fixture)
     ref = np.load(PLANAR_CONTENT_REFERENCE) if PLANAR_CONTENT_REFERENCE.is_file() else None
@@ -439,29 +504,16 @@ def test_planar_bundle_content_identical_across_platforms(v02_fixture: Path) -> 
         for kind in ("mask", "contours")
         if fingerprint["content"][roi][kind] != expected[kind]
     ]
+    serialisation = _serialisation_differences(fingerprint, ref)
     assert sorted(PLANAR_CONTENT_SHA256) == sorted(CONFORMANCE_ROIS)
-    assert not problems, "planar bundle content differs from the Windows reference:\n" + (
-        "\n".join(problems))
-    if ref is None:
-        return
-    expected_serialisation = {
-        key.removeprefix("serialisation/"): str(ref[key])
-        for key in ref.files if key.startswith("serialisation/")
-    }
-    actual = fingerprint["serialisation"]
-    differing = sorted(
-        key for key in set(expected_serialisation) | set(actual)
-        if expected_serialisation.get(key) != actual.get(key)
+    assert not problems, (
+        "planar bundle content differs from the Windows reference:\n" + "\n".join(problems)
+        + "\nserialisation layers that differ:\n" + ("\n".join(serialisation) or "none")
     )
-    if differing:
-        detail = [
-            f"{key}: {expected_serialisation.get(key)} -> {actual.get(key)}"
-            if key.startswith("gzip_header/") else key
-            for key in differing
-        ]
+    if serialisation:
         warnings.warn(
             "planar bundle content matches the Windows reference but these serialisation "
-            "layers differ:\n" + "\n".join(detail),
+            "layers differ:\n" + "\n".join(serialisation),
             stacklevel=1,
         )
 
