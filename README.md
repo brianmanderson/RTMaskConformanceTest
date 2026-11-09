@@ -143,12 +143,21 @@ rtmask-conformance generate ./fixture
 #    Inputs to your tool:
 #      DICOM CT series : ./fixture/refct/
 #      RTSTRUCT        : ./fixture/rtstruct/primitives_planar.dcm
+#    (one RTSTRUCT per ROI bundle, rtstruct/primitives_<bundle>.dcm;
+#     manifest.json lists the bundles and the ROIs each one holds)
 
-# 3. Score the predictions
-rtmask-conformance verify --predictions ./predictions --groundtruth ./fixture/groundtruth
+# 3. Score the predictions against the fixture
+rtmask-conformance verify --predictions ./predictions --fixture ./fixture
 ```
 
-Exit codes: `0` all ROIs PASS, `1` any FAIL/MISSING/GEOMETRY_MISMATCH, `2` usage error.
+`--fixture` reads `./fixture/manifest.json`, checks every ground-truth file against the
+SHA-256 recorded at generation, scores the manifest's graded ROIs, and records which
+fixture it scored (package version, git SHA, quadrature, bundles) in the report.
+`--bundle <name>` (repeatable) restricts scoring to those bundles. The v0.1 form,
+`--groundtruth ./fixture/groundtruth`, still works: no manifest, no hash check.
+
+Exit codes: `0` all ROIs PASS, `1` any FAIL/MISSING/GEOMETRY_MISMATCH, `2` usage error
+(including ground truth that fails its manifest hash check).
 
 See the file `README_FOR_TOOL_AUTHOR.md` written into the fixture directory for the
 complete contract a tool author must satisfy.
@@ -178,12 +187,15 @@ rejected.
 
 ```bash
 RTMASK_CONFORMANCE_PREDICTIONS=./predictions \
-RTMASK_CONFORMANCE_GROUNDTRUTH=./fixture/groundtruth \
+RTMASK_CONFORMANCE_FIXTURE=./fixture \
 pytest --pyargs rtmask_conformance.tests
 ```
 
-This produces one parametrized test per ROI with the same pass/fail semantics as the
-CLI.
+This produces one parametrized test per graded ROI in the fixture's manifest, with the
+same pass/fail semantics as `verify --fixture` (ground truth is hash-checked first).
+`--predictions` / `--fixture` pytest options are equivalent to the variables. The v0.1
+form, `RTMASK_CONFORMANCE_GROUNDTRUTH=./fixture/groundtruth` (or `--groundtruth`),
+still works and parametrizes over `CONFORMANCE_ROIS`.
 
 ## Use as a library / plugin evaluator
 

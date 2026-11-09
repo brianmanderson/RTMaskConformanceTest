@@ -2,8 +2,13 @@
 
 Public surface:
 
-* :func:`verify_predictions` — load every ROI in ``CONFORMANCE_ROIS``, score
-  it, and return a ``Report`` summarizing the run.
+* :func:`verify_fixture` — read a fixture's ``manifest.json``, check every
+  ground-truth file against its recorded SHA-256, score the manifest's graded
+  ROIs, and return a ``Report`` that names the fixture it scored. The
+  preferred entry point.
+* :func:`verify_predictions` — the v0.1 path: score every ROI in
+  ``CONFORMANCE_ROIS`` against a bare ground-truth directory, no manifest.
+* :func:`check_fixture_integrity` — the hash check on its own.
 * :func:`evaluate_one` — score a single ROI; the pytest harness calls this
   per parametrized test.
 * :class:`ResultRecord` — per-ROI result, JSON-serializable.
@@ -18,6 +23,7 @@ diagnostic.
 
 from __future__ import annotations
 
+import hashlib
 import warnings
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -26,15 +32,25 @@ from pathlib import Path
 import numpy as np
 import SimpleITK as sitk
 
+from . import __version__
 from ._roi_set import CONFORMANCE_ROIS
 from ._vendor.metrics import all_surface_metrics, binary_dsc, volume_metrics
+from .manifest import FixtureManifest, read_manifest
 from .thresholds import ConformanceConfig, Thresholds, load_config
+
+#: Version of the JSON report layout (``Report.as_dict()["version"]``).
+#: 2.0 adds the ``fixture`` block.
+REPORT_VERSION: str = "2.0"
 
 # Geometry agreement tolerance (mm). Tighter than 1e-4 risks false negatives on
 # tools that internally round to single precision.
 GEOMETRY_TOLERANCE_MM: float = 1e-4
 
 SURFACE_DSC_TOLERANCE_MM: float = 1.0
+
+
+class FixtureIntegrityError(ValueError):
+    """A fixture's ground truth does not match the hashes in its manifest."""
 
 
 class Status(str, Enum):
@@ -66,6 +82,8 @@ class Report:
     config_source: str
     summary: dict[str, int]
     results: list[ResultRecord]
+    # Manifest summary of the fixture scored; None on the v0.1 groundtruth-only path.
+    fixture: dict | None = None
 
     @property
     def overall_pass(self) -> bool:
@@ -73,8 +91,9 @@ class Report:
 
     def as_dict(self) -> dict:
         return {
-            "version": "1.0",
+            "version": REPORT_VERSION,
             "config_source": self.config_source,
+            "fixture": self.fixture,
             "summary": self.summary,
             "results": [r.as_dict() for r in self.results],
         }
@@ -253,9 +272,18 @@ def verify_predictions(
     if not gt_root.is_dir():
         raise FileNotFoundError(f"Ground-truth directory not found: {gt_root}")
 
+    return _score(pred_root, {roi: gt_root / f"{roi}.nii.gz" for roi in rois}, config)
+
+
+def _score(
+    pred_root: Path,
+    gt_paths: dict[str, Path],
+    config: ConformanceConfig,
+    fixture: dict | None = None,
+) -> Report:
+    """Score each ``roi -> ground-truth path`` in order and summarize."""
     results: list[ResultRecord] = []
-    for roi in rois:
-        gt_path = gt_root / f"{roi}.nii.gz"
+    for roi, gt_path in gt_paths.items():
         if not gt_path.is_file():
             raise FileNotFoundError(
                 f"Ground-truth NIfTI for {roi!r} not found at {gt_path}. "
@@ -271,4 +299,131 @@ def verify_predictions(
         "missing": sum(1 for r in results if r.status == Status.MISSING),
         "geometry_mismatch": sum(1 for r in results if r.status == Status.GEOMETRY_MISMATCH),
     }
-    return Report(config_source=config.config_source, summary=summary, results=results)
+    return Report(
+        config_source=config.config_source, summary=summary, results=results, fixture=fixture
+    )
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _select_bundles(manifest: FixtureManifest, bundles: list[str] | None) -> list[str]:
+    if bundles is None:
+        return list(manifest.bundles)
+    unknown = [b for b in bundles if b not in manifest.bundles]
+    if unknown:
+        raise ValueError(
+            f"bundle(s) {unknown} not in this fixture (available: {list(manifest.bundles)})"
+        )
+    return [b for b in manifest.bundles if b in bundles]
+
+
+def check_fixture_integrity(
+    fixture_dir: str | Path,
+    manifest: FixtureManifest | None = None,
+    *,
+    bundles: list[str] | None = None,
+) -> FixtureManifest:
+    """Check every ground-truth file of the selected bundles against the manifest.
+
+    Returns the manifest. Raises ``FileNotFoundError`` for a missing truth file
+    and :class:`FixtureIntegrityError` for a hash mismatch or a truth file the
+    manifest records without a hash.
+    """
+    root = Path(fixture_dir)
+    manifest = manifest or read_manifest(root)
+    selected = set(_select_bundles(manifest, bundles))
+    for roi, entry in manifest.rois.items():
+        if entry.bundle not in selected or entry.truth_path is None:
+            continue
+        path = root / entry.truth_path
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Ground truth for {roi!r} not found at {path}. "
+                "Re-run `rtmask-conformance generate` to rebuild the fixture."
+            )
+        if entry.truth_sha256 is None:
+            raise FixtureIntegrityError(
+                f"{path}: manifest records no SHA-256 for {roi!r}. "
+                "Re-run `rtmask-conformance generate` to rebuild the fixture."
+            )
+        actual = _sha256(path)
+        if actual != entry.truth_sha256:
+            raise FixtureIntegrityError(
+                f"{path}: SHA-256 {actual} does not match the manifest "
+                f"({entry.truth_sha256}); the ground truth changed after generation. "
+                "Re-run `rtmask-conformance generate` to rebuild the fixture."
+            )
+    return manifest
+
+
+def fixture_summary(
+    fixture_dir: str | Path, manifest: FixtureManifest, bundles: list[str]
+) -> dict:
+    """The ``fixture`` block of a report."""
+    return {
+        "path": str(Path(fixture_dir)),
+        "manifest_version": manifest.manifest_version,
+        "package_version": manifest.package_version,
+        "git_sha": manifest.git_sha,
+        "n_quadrature": manifest.n_quadrature,
+        "pv_threshold": manifest.pv_threshold,
+        "bundles": bundles,
+    }
+
+
+def verify_fixture(
+    predictions_dir: str | Path,
+    fixture_dir: str | Path,
+    config: ConformanceConfig | None = None,
+    *,
+    bundles: list[str] | None = None,
+) -> Report:
+    """Score ``predictions_dir`` against the fixture at ``fixture_dir``.
+
+    Reads ``<fixture_dir>/manifest.json``, checks the ground truth of the
+    selected ``bundles`` (default: all) against the recorded SHA-256s, and
+    scores the manifest's graded ROIs in those bundles exactly as
+    :func:`verify_predictions` does. A fixture written by a different package
+    version is scored, with a warning.
+    """
+    config = config or load_config()
+    fixture_root = Path(fixture_dir)
+    pred_root = Path(predictions_dir)
+    if not fixture_root.is_dir():
+        raise FileNotFoundError(f"Fixture directory not found: {fixture_root}")
+    if not (fixture_root / "manifest.json").is_file():
+        raise FileNotFoundError(
+            f"No manifest.json in {fixture_root}. Pass the directory "
+            "`rtmask-conformance generate` wrote, or use --groundtruth for a bare "
+            "ground-truth directory."
+        )
+    if not pred_root.is_dir():
+        raise FileNotFoundError(f"Predictions directory not found: {pred_root}")
+
+    manifest = read_manifest(fixture_root)
+    selected = _select_bundles(manifest, bundles)
+    check_fixture_integrity(fixture_root, manifest, bundles=selected)
+    if manifest.package_version != __version__:
+        warnings.warn(
+            f"fixture was generated by rtmask-conformance {manifest.package_version}; "
+            f"verifying with {__version__}. Regenerate the fixture if results look off.",
+            stacklevel=2,
+        )
+
+    gt_paths: dict[str, Path] = {}
+    for roi, entry in manifest.rois.items():
+        if not entry.graded or entry.bundle not in selected:
+            continue
+        if entry.truth_kind != "binary_mask" or entry.truth_path is None:
+            raise NotImplementedError(
+                f"{roi}: no grader for truth_kind {entry.truth_kind!r} in this version"
+            )
+        gt_paths[roi] = fixture_root / entry.truth_path
+
+    return _score(pred_root, gt_paths, config, fixture_summary(fixture_root, manifest, selected))
