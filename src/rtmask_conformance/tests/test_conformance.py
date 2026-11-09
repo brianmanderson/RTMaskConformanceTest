@@ -1,4 +1,4 @@
-"""Parametrized conformance test: one case per graded ROI.
+"""Parametrized conformance test: one case per scored ROI.
 
 Run with:
 
@@ -6,10 +6,17 @@ Run with:
     RTMASK_CONFORMANCE_FIXTURE=./fixture \
     pytest --pyargs rtmask_conformance.tests.test_conformance
 
-With a fixture, the ROI list is the manifest's graded ROIs and each ROI's
+With a fixture, the ROI list is the one ``verify --fixture`` scores (every
+manifest ROI with a binary-mask ground truth, graded or not) and each ROI's
 ground truth is the manifest's ``truth_path``. Without one (the v0.1 form,
 ``RTMASK_CONFORMANCE_GROUNDTRUTH=./fixture/groundtruth``), the ROI list is
 ``CONFORMANCE_ROIS``.
+
+Statuses map onto pytest outcomes as they map onto the CLI exit code:
+``PASS`` passes; ``FAIL``, ``MISSING`` and ``GEOMETRY_MISMATCH`` fail;
+``UNSUPPORTED_TYPE`` (a type the threshold YAML does not claim, and no
+prediction) and ``REPORT_ONLY`` (scored, never graded) are skipped with the
+reason in the skip message.
 
 A user-supplied threshold YAML can be picked up via the
 ``RTMASK_CONFORMANCE_CONFIG`` environment variable.
@@ -24,7 +31,12 @@ import pytest
 
 from rtmask_conformance import CONFORMANCE_ROIS, load_config
 from rtmask_conformance.manifest import read_manifest
-from rtmask_conformance.verify import Status, evaluate_one
+from rtmask_conformance.verify import (
+    Status,
+    _resolve_prediction_path,
+    evaluate_one,
+    fixture_targets,
+)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -32,7 +44,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         return
     raw = metafunc.config.getoption("--fixture") or os.environ.get("RTMASK_CONFORMANCE_FIXTURE")
     if raw is not None and (Path(raw) / "manifest.json").is_file():
-        rois = read_manifest(raw).graded_rois
+        rois = [t.roi for t in fixture_targets(raw, read_manifest(raw))]
     else:
         rois = list(CONFORMANCE_ROIS)
     metafunc.parametrize("roi", rois)
@@ -53,22 +65,23 @@ def test_conformance(
 ):
     if fixture_manifest is not None:
         fixture_dir, manifest = fixture_manifest
-        gt_path = fixture_dir / manifest.rois[roi].truth_path
+        target = {t.roi: t for t in fixture_targets(fixture_dir, manifest)}[roi]
+        gt_path = target.gt_path
+        kwargs = {"geometric_type": target.geometric_type, "truth_kind": target.truth_kind,
+                  "graded": target.graded}
     else:
         gt_path = groundtruth_dir / f"{roi}.nii.gz"
+        kwargs = {}  # geometric type from the suite's own ROI table; graded
     assert gt_path.is_file(), f"ground-truth missing at {gt_path}"
 
-    pred_path = predictions_dir / f"{roi}.nii.gz"
-    if not pred_path.is_file():
-        # case-insensitive fallback handled by evaluate_one's caller; here we
-        # still want a clear failure message rather than a silent skip.
-        pred_path = next(
-            (p for p in predictions_dir.glob("*.nii.gz") if p.name.lower() == f"{roi}.nii.gz".lower()),
-            None,
-        )
+    pred_path = _resolve_prediction_path(predictions_dir, roi)
+    result = evaluate_one(roi, pred_path, gt_path, conformance_config, **kwargs)
 
-    result = evaluate_one(roi, pred_path, gt_path, conformance_config)
-
+    if result.status == Status.UNSUPPORTED_TYPE:
+        pytest.skip(f"{roi}: geometric type {result.geometric_type} not claimed, no prediction")
+    if result.status == Status.REPORT_ONLY:
+        detail = result.geometry_diagnostic or result.violations or "within thresholds"
+        pytest.skip(f"{roi}: report-only, not graded; metrics={result.metrics}; {detail}")
     if result.status == Status.MISSING:
         pytest.fail(f"prediction file missing: {predictions_dir / (roi + '.nii.gz')}")
     if result.status == Status.GEOMETRY_MISMATCH:

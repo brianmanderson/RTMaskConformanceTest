@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
+import sys
 import warnings
 from pathlib import Path
 
@@ -339,6 +341,41 @@ def test_groundtruth_form_reports_claims(fixture: Path, tmp_path: Path) -> None:
     assert report.fixture is None
     assert report.claims == {"geometric_types": list(STANDARD_GEOMETRIC_TYPES)}
     assert _statuses(report) == {"box": "PASS"}
+
+
+# ---------------------------------------------------------------------------
+# The pytest harness (test_conformance.py) maps statuses onto pytest outcomes
+# ---------------------------------------------------------------------------
+
+
+def _run_harness(fixture: Path, pred: Path, config: Path | None) -> str:
+    env = dict(os.environ, RTMASK_CONFORMANCE_PREDICTIONS=str(pred),
+               RTMASK_CONFORMANCE_FIXTURE=str(fixture))
+    env.pop("RTMASK_CONFORMANCE_GROUNDTRUTH", None)
+    env.pop("RTMASK_CONFORMANCE_CONFIG", None)
+    if config is not None:
+        env["RTMASK_CONFORMANCE_CONFIG"] = str(config)
+    harness = Path(__file__).with_name("test_conformance.py")
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", str(harness), "-rA", "-p", "no:cacheprovider"],
+        env=env, capture_output=True, text=True, timeout=300,
+    )
+    return proc.stdout + proc.stderr
+
+
+def test_harness_skips_unsupported_and_report_only(fixture: Path, tmp_path: Path) -> None:
+    pred = _predictions(fixture, tmp_path, ["box", "probe"])
+    out = _run_harness(fixture, pred, _yaml(tmp_path, NO_XOR))
+    assert "1 passed, 2 skipped" in out, out
+    assert "ring_xor: geometric type CLOSEDPLANAR_XOR not claimed" in out, out
+    assert "probe: report-only, not graded" in out, out
+
+
+def test_harness_fails_a_claimed_missing_type(fixture: Path, tmp_path: Path) -> None:
+    pred = _predictions(fixture, tmp_path, ["box", "probe"])
+    out = _run_harness(fixture, pred, None)
+    assert "1 failed, 1 passed, 1 skipped" in out, out
+    assert "FAILED" in out and "test_conformance[ring_xor]" in out, out
 
 
 # ---------------------------------------------------------------------------
