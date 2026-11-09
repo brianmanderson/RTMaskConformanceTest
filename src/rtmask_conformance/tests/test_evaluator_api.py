@@ -254,3 +254,61 @@ def test_thresholded_geometry_mismatch_returns_record(tmp_path: Path) -> None:
     assert rec.status == Status.GEOMETRY_MISMATCH
     assert rec.geometry_diagnostic is not None
     assert "origin" in rec.geometry_diagnostic
+
+
+# ---------------------------------------------------------------------------
+# evaluate_masks_with_thresholds(report_only=True)
+# ---------------------------------------------------------------------------
+
+
+def test_thresholded_report_only_returns_report_only_with_metrics() -> None:
+    """``report_only=True`` scores as usual but never returns FAIL; the
+    violations still say what grading would have found."""
+    a = _cube((20, 20, 20), (5, 5, 0), 10)
+    b = _cube((20, 20, 20), (5, 5, 5), 10)
+
+    rec = evaluate_masks_with_thresholds(a, b, spacing_xyz=(1.0, 1.0, 1.0), report_only=True)
+    assert rec.status == Status.REPORT_ONLY
+    assert rec.metrics["dice"] == pytest.approx(0.5)
+    assert any("dice" in v for v in rec.violations)
+
+    same = evaluate_masks_with_thresholds(a, a, spacing_xyz=(1.0, 1.0, 1.0), report_only=True)
+    assert same.status == Status.REPORT_ONLY
+    assert same.violations == []
+
+
+def test_thresholded_report_only_geometry_mismatch(tmp_path: Path) -> None:
+    a = _cube((20, 20, 20), (5, 5, 5), 10)
+    pred = _write_nifti(a, tmp_path / "p.nii.gz", origin=(0.0, 0.0, 0.0))
+    gt = _write_nifti(a, tmp_path / "g.nii.gz", origin=(1.0, 0.0, 0.0))
+
+    rec = evaluate_masks_with_thresholds(pred, gt, report_only=True)
+    assert rec.status == Status.REPORT_ONLY
+    assert "origin" in rec.geometry_diagnostic
+
+
+def test_thresholded_config_report_only_applies(tmp_path: Path) -> None:
+    """A ``roi`` named in the config's ``report_only`` list is report-only too."""
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text("schema_version: 2\nreport_only: [probe]\n", encoding="utf-8")
+    config = load_config(cfg_path)
+    a = _cube((20, 20, 20), (5, 5, 0), 10)
+    b = _cube((20, 20, 20), (5, 5, 5), 10)
+
+    rec = evaluate_masks_with_thresholds(a, b, spacing_xyz=(1.0, 1.0, 1.0),
+                                         roi="probe", config=config)
+    assert rec.status == Status.REPORT_ONLY
+    other = evaluate_masks_with_thresholds(a, b, spacing_xyz=(1.0, 1.0, 1.0),
+                                           roi="other", config=config)
+    assert other.status == Status.FAIL
+
+
+def test_thresholded_any_roi_uses_its_config_block(tmp_path: Path) -> None:
+    """Per-primitive blocks may name any ROI, not only the shipped seven."""
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text("schema_version: 2\nprimitives:\n  probe:\n    dice: 0.4\n",
+                        encoding="utf-8")
+    a = _cube((20, 20, 20), (5, 5, 5), 10)
+    rec = evaluate_masks_with_thresholds(a, a, spacing_xyz=(1.0, 1.0, 1.0), roi="probe",
+                                         config=load_config(cfg_path))
+    assert rec.thresholds["dice"] == 0.4

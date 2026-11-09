@@ -19,6 +19,19 @@ ground-truth NIfTI by more than ``GEOMETRY_TOLERANCE_MM`` is flagged with the
 distinct ``GEOMETRY_MISMATCH`` status, never silently scored. Most third-party
 converter bugs are geometry, not labeling, and surfacing them separately is
 diagnostic.
+
+Each ROI resolves to one :class:`Status`, in this order:
+
+1. prediction absent and the ROI's geometric type not claimed by the config
+   -> ``UNSUPPORTED_TYPE`` (not a failure);
+2. the ROI is report-only (named in ``report_only`` by ROI or geometric type,
+   or ``graded: false`` in the manifest) -> ``REPORT_ONLY``: scored when it can
+   be, never a failure;
+3. prediction absent -> ``MISSING``;
+4. geometry differs from the ground truth -> ``GEOMETRY_MISMATCH``;
+5. otherwise ``PASS`` or ``FAIL`` against the thresholds.
+
+``MISSING``, ``GEOMETRY_MISMATCH`` and ``FAIL`` are failures; the other three are not.
 """
 
 from __future__ import annotations
@@ -33,13 +46,15 @@ import numpy as np
 import SimpleITK as sitk
 
 from . import __version__
-from ._roi_set import CONFORMANCE_ROIS
+from ._roi_set import BUNDLES, CONFORMANCE_ROIS
 from ._vendor.metrics import all_surface_metrics, binary_dsc, volume_metrics
 from .manifest import FixtureManifest, read_manifest
 from .thresholds import ConformanceConfig, Thresholds, load_config
 
 #: Version of the JSON report layout (``Report.as_dict()["version"]``).
-#: 2.0 adds the ``fixture`` block.
+#: 2.0 adds the ``fixture``, ``claims`` and ``report_only`` blocks, the
+#: ``unsupported_type`` and ``report_only`` summary counts, and per-ROI
+#: ``geometric_type`` and ``truth_kind``.
 REPORT_VERSION: str = "2.0"
 
 # Geometry agreement tolerance (mm). Tighter than 1e-4 risks false negatives on
@@ -58,6 +73,29 @@ class Status(str, Enum):
     FAIL = "FAIL"
     MISSING = "MISSING"
     GEOMETRY_MISMATCH = "GEOMETRY_MISMATCH"
+    UNSUPPORTED_TYPE = "UNSUPPORTED_TYPE"
+    REPORT_ONLY = "REPORT_ONLY"
+
+
+#: Statuses that make a run fail (CLI exit code 1).
+FAILING_STATUSES: frozenset[Status] = frozenset(
+    {Status.FAIL, Status.MISSING, Status.GEOMETRY_MISMATCH}
+)
+
+#: ``Status`` -> ``Report.summary`` key, in summary order.
+_SUMMARY_KEYS: dict[Status, str] = {
+    Status.PASS: "passed",
+    Status.FAIL: "failed",
+    Status.MISSING: "missing",
+    Status.GEOMETRY_MISMATCH: "geometry_mismatch",
+    Status.UNSUPPORTED_TYPE: "unsupported_type",
+    Status.REPORT_ONLY: "report_only",
+}
+
+#: Geometric type of every suite ROI, for scoring paths without a manifest.
+_KNOWN_GEOMETRIC_TYPES: dict[str, str] = {
+    roi.name: roi.geometric_type.value for rois in BUNDLES.values() for roi in rois
+}
 
 
 @dataclass
@@ -70,6 +108,8 @@ class ResultRecord:
     geometry_diagnostic: str | None = None  # populated when status == GEOMETRY_MISMATCH
     prediction_path: str | None = None
     groundtruth_path: str | None = None
+    geometric_type: str | None = None  # Contour Geometric Type of the ROI, if known
+    truth_kind: str | None = None  # kind of ground truth scored against
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -84,16 +124,23 @@ class Report:
     results: list[ResultRecord]
     # Manifest summary of the fixture scored; None on the v0.1 groundtruth-only path.
     fixture: dict | None = None
+    # What the config claimed and marked report-only (see thresholds.py).
+    claims: dict | None = None
+    report_only: list[str] = field(default_factory=list)
 
     @property
     def overall_pass(self) -> bool:
-        return self.summary["passed"] == self.summary["total"]
+        """True when no ROI is FAIL, MISSING or GEOMETRY_MISMATCH."""
+        s = self.summary
+        return s["failed"] + s["missing"] + s["geometry_mismatch"] == 0
 
     def as_dict(self) -> dict:
         return {
             "version": REPORT_VERSION,
             "config_source": self.config_source,
             "fixture": self.fixture,
+            "claims": self.claims,
+            "report_only": self.report_only,
             "summary": self.summary,
             "results": [r.as_dict() for r in self.results],
         }
@@ -195,23 +242,70 @@ def _evaluate_against_thresholds(
     return violations
 
 
+def as_report_only(record: ResultRecord) -> ResultRecord:
+    """Return ``record`` with status ``REPORT_ONLY``.
+
+    Metrics, violations (what grading would have said) and any geometry
+    diagnostic are kept for information; none of them affects the verdict.
+    """
+    record.status = Status.REPORT_ONLY
+    return record
+
+
 def evaluate_one(
     roi: str,
     prediction_path: str | Path | None,
     groundtruth_path: str | Path,
     config: ConformanceConfig,
+    *,
+    geometric_type: str | None = None,
+    truth_kind: str = "binary_mask",
+    graded: bool = True,
 ) -> ResultRecord:
-    """Score one ROI. ``prediction_path=None`` produces a MISSING record."""
-    thresholds = config.thresholds_for(roi)
-    threshold_dict = thresholds.as_dict()
+    """Score one ROI and resolve its :class:`Status` (order in the module docstring).
 
+    ``prediction_path=None`` means the tool wrote nothing for this ROI.
+    ``geometric_type`` defaults to the suite's own record for ``roi`` (``None``
+    for a ROI the suite does not know, which counts as claimed). ``graded=False``
+    (from the manifest) makes the ROI report-only.
+    """
+    if geometric_type is None:
+        geometric_type = _KNOWN_GEOMETRIC_TYPES.get(roi)
+    thresholds = config.thresholds_for(roi)
+    common = {
+        "roi": roi,
+        "thresholds": thresholds.as_dict(),
+        "groundtruth_path": str(groundtruth_path),
+        "geometric_type": geometric_type,
+        "truth_kind": truth_kind,
+    }
+
+    if prediction_path is None and not config.claims(geometric_type):
+        return ResultRecord(
+            status=Status.UNSUPPORTED_TYPE,
+            violations=[f"no prediction; geometric type {geometric_type} is not claimed"],
+            **common,
+        )
+
+    record = _grade(roi, prediction_path, groundtruth_path, thresholds, common)
+    if not graded or config.is_report_only(roi, geometric_type):
+        return as_report_only(record)
+    return record
+
+
+def _grade(
+    roi: str,
+    prediction_path: str | Path | None,
+    groundtruth_path: str | Path,
+    thresholds: Thresholds,
+    common: dict,
+) -> ResultRecord:
+    """MISSING, GEOMETRY_MISMATCH, PASS or FAIL for one ROI (the v0.1 grading)."""
     if prediction_path is None:
         return ResultRecord(
-            roi=roi,
             status=Status.MISSING,
-            thresholds=threshold_dict,
             violations=[f"prediction file <predictions>/{roi}.nii.gz not found"],
-            groundtruth_path=str(groundtruth_path),
+            **common,
         )
 
     pred_img = sitk.ReadImage(str(prediction_path))
@@ -220,13 +314,11 @@ def evaluate_one(
     geom_diag = _geometry_diff(pred_img, gt_img, GEOMETRY_TOLERANCE_MM)
     if geom_diag is not None:
         return ResultRecord(
-            roi=roi,
             status=Status.GEOMETRY_MISMATCH,
-            thresholds=threshold_dict,
             violations=["geometry does not match ground truth"],
             geometry_diagnostic=geom_diag,
             prediction_path=str(prediction_path),
-            groundtruth_path=str(groundtruth_path),
+            **common,
         )
 
     pred_arr = sitk.GetArrayFromImage(pred_img)
@@ -237,13 +329,11 @@ def evaluate_one(
     violations = _evaluate_against_thresholds(metrics, thresholds)
 
     return ResultRecord(
-        roi=roi,
         status=Status.PASS if not violations else Status.FAIL,
         metrics=metrics,
-        thresholds=threshold_dict,
         violations=violations,
         prediction_path=str(prediction_path),
-        groundtruth_path=str(groundtruth_path),
+        **common,
     )
 
 
@@ -272,35 +362,55 @@ def verify_predictions(
     if not gt_root.is_dir():
         raise FileNotFoundError(f"Ground-truth directory not found: {gt_root}")
 
-    return _score(pred_root, {roi: gt_root / f"{roi}.nii.gz" for roi in rois}, config)
+    return _score(
+        pred_root, [_RoiToScore(roi, gt_root / f"{roi}.nii.gz") for roi in rois], config
+    )
+
+
+@dataclass(frozen=True)
+class _RoiToScore:
+    roi: str
+    gt_path: Path
+    geometric_type: str | None = None
+    truth_kind: str = "binary_mask"
+    graded: bool = True
+
+
+def summarize(results: list[ResultRecord]) -> dict[str, int]:
+    """``Report.summary``: ``total`` plus one count per status."""
+    summary = {"total": len(results)}
+    for status, key in _SUMMARY_KEYS.items():
+        summary[key] = sum(1 for r in results if r.status == status)
+    return summary
 
 
 def _score(
     pred_root: Path,
-    gt_paths: dict[str, Path],
+    to_score: list[_RoiToScore],
     config: ConformanceConfig,
     fixture: dict | None = None,
 ) -> Report:
-    """Score each ``roi -> ground-truth path`` in order and summarize."""
+    """Score each ROI in order and summarize."""
     results: list[ResultRecord] = []
-    for roi, gt_path in gt_paths.items():
-        if not gt_path.is_file():
+    for item in to_score:
+        if not item.gt_path.is_file():
             raise FileNotFoundError(
-                f"Ground-truth NIfTI for {roi!r} not found at {gt_path}. "
+                f"Ground-truth NIfTI for {item.roi!r} not found at {item.gt_path}. "
                 "Re-run `rtmask-conformance generate` to rebuild the fixture."
             )
-        pred_path = _resolve_prediction_path(pred_root, roi)
-        results.append(evaluate_one(roi, pred_path, gt_path, config))
+        pred_path = _resolve_prediction_path(pred_root, item.roi)
+        results.append(evaluate_one(
+            item.roi, pred_path, item.gt_path, config,
+            geometric_type=item.geometric_type, truth_kind=item.truth_kind, graded=item.graded,
+        ))
 
-    summary = {
-        "total": len(results),
-        "passed": sum(1 for r in results if r.status == Status.PASS),
-        "failed": sum(1 for r in results if r.status == Status.FAIL),
-        "missing": sum(1 for r in results if r.status == Status.MISSING),
-        "geometry_mismatch": sum(1 for r in results if r.status == Status.GEOMETRY_MISMATCH),
-    }
     return Report(
-        config_source=config.config_source, summary=summary, results=results, fixture=fixture
+        config_source=config.config_source,
+        summary=summarize(results),
+        results=results,
+        fixture=fixture,
+        claims=config.claims_dict(),
+        report_only=list(config.report_only),
     )
 
 
@@ -388,9 +498,11 @@ def verify_fixture(
 
     Reads ``<fixture_dir>/manifest.json``, checks the ground truth of the
     selected ``bundles`` (default: all) against the recorded SHA-256s, and
-    scores the manifest's graded ROIs in those bundles exactly as
-    :func:`verify_predictions` does. A fixture written by a different package
-    version is scored, with a warning.
+    scores the manifest's ROIs in those bundles exactly as
+    :func:`verify_predictions` does. A ROI the manifest records as
+    ``graded: false`` is scored as ``REPORT_ONLY`` when it has a binary-mask
+    ground truth, and skipped otherwise. A fixture written by a different
+    package version is scored, with a warning.
     """
     config = config or load_config()
     fixture_root = Path(fixture_dir)
@@ -416,14 +528,23 @@ def verify_fixture(
             stacklevel=2,
         )
 
-    gt_paths: dict[str, Path] = {}
+    to_score: list[_RoiToScore] = []
     for roi, entry in manifest.rois.items():
-        if not entry.graded or entry.bundle not in selected:
+        if entry.bundle not in selected:
             continue
-        if entry.truth_kind != "binary_mask" or entry.truth_path is None:
+        scorable = entry.truth_kind == "binary_mask" and entry.truth_path is not None
+        if not scorable:
+            if not entry.graded:
+                continue  # shipped for information; nothing to score against
             raise NotImplementedError(
                 f"{roi}: no grader for truth_kind {entry.truth_kind!r} in this version"
             )
-        gt_paths[roi] = fixture_root / entry.truth_path
+        to_score.append(_RoiToScore(
+            roi,
+            fixture_root / entry.truth_path,
+            geometric_type=entry.geometric_type,
+            truth_kind=entry.truth_kind,
+            graded=entry.graded,
+        ))
 
-    return _score(pred_root, gt_paths, config, fixture_summary(fixture_root, manifest, selected))
+    return _score(pred_root, to_score, config, fixture_summary(fixture_root, manifest, selected))

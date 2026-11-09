@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rtmask-conformance"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "Universal conformance test suite for DICOM-RT-to-NIfTI converters: synthetic CT + RTSTRUCT fixtures with analytic ground truth and pass/fail metrics."
 readme = "README.md"
 requires-python = ">=3.10"

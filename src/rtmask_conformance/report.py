@@ -2,6 +2,11 @@
 
 No external dependencies (no ``tabulate``, no ``rich``). ANSI color is only
 emitted when stdout is a TTY.
+
+Badges: ``PASS``, ``FAIL``, ``MISS`` (MISSING), ``GEOM`` (GEOMETRY_MISMATCH),
+``UNSUP`` (UNSUPPORTED_TYPE) and ``REPORT`` (REPORT_ONLY). The JSON report
+(``Report.as_dict``) carries ``version``, ``config_source``, ``fixture``,
+``claims``, ``report_only``, ``summary`` and per-ROI ``results``.
 """
 
 from __future__ import annotations
@@ -32,6 +37,10 @@ def _status_badge(status: Status) -> str:
         return _color("MISS  ", "33")  # yellow
     if status == Status.GEOMETRY_MISMATCH:
         return _color("GEOM  ", "35")  # magenta
+    if status == Status.UNSUPPORTED_TYPE:
+        return _color("UNSUP ", "36")  # cyan
+    if status == Status.REPORT_ONLY:
+        return _color("REPORT", "34")  # blue
     return status.value
 
 
@@ -58,6 +67,16 @@ def render_text(report: Report) -> str:
         lines.append(f"  {_color('GEOMETRY_MISMATCH', '35')}: {report.summary['geometry_mismatch']}")
     if report.summary.get("failed"):
         lines.append(f"  {_color('FAILED', '31')}: {report.summary['failed']}")
+    if report.summary.get("unsupported_type"):
+        lines.append(
+            f"  {_color('UNSUPPORTED_TYPE', '36')}: {report.summary['unsupported_type']}"
+            "  (type not claimed; not a failure)"
+        )
+    if report.summary.get("report_only"):
+        lines.append(
+            f"  {_color('REPORT_ONLY', '34')}: {report.summary['report_only']}"
+            "  (scored, not graded; not a failure)"
+        )
     lines.append("")
 
     headers = ["status", "ROI                                ", " dice ", "sDSC1 ", "HD95mm", "MSD mm", "dV%   "]
@@ -84,7 +103,8 @@ def render_text(report: Report) -> str:
         lines.append("")
         lines.append("Details:")
         for r in failures:
-            lines.append(f"  {r.roi} [{r.status.value}]")
+            note = "  (for information; not graded)" if r.status == Status.REPORT_ONLY else ""
+            lines.append(f"  {r.roi} [{r.status.value}]{note}")
             if r.geometry_diagnostic:
                 lines.append(f"    geometry: {r.geometry_diagnostic}")
             for v in r.violations:

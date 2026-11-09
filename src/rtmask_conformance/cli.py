@@ -1,9 +1,11 @@
 """argparse-based CLI: ``rtmask-conformance generate ...`` and ``... verify ...``.
 
 Exit codes:
-    0   all PASS (or generate succeeded)
+    0   no ROI failed: every ROI is PASS, UNSUPPORTED_TYPE or REPORT_ONLY
+        (or generate succeeded)
     1   any FAIL / MISSING / GEOMETRY_MISMATCH (verify only)
-    2   usage / IO error, or fixture ground truth that fails its manifest hash check
+    2   usage / IO error, a malformed --config, or fixture ground truth that
+        fails its manifest hash check
 """
 
 from __future__ import annotations

@@ -1,4 +1,14 @@
-schema_version: 1
+schema_version: 2
+
+# Contour Geometric Type values the tool under test supports. A ROI whose type is
+# not claimed and for which the tool writes no prediction is UNSUPPORTED_TYPE,
+# which does not fail the run. A tool's own YAML replaces this list.
+claims:
+  geometric_types: [CLOSED_PLANAR, CLOSEDPLANAR_XOR, OPEN_PLANAR, OPEN_NONPLANAR, POINT]
+
+# ROI names or geometric types that are scored and reported but never graded
+# (status REPORT_ONLY, never a failure). A tool's own YAML adds to this list.
+report_only: []
 
 # Defaults applied to every ROI unless overridden under `primitives:`.
 defaults:

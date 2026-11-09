@@ -27,7 +27,7 @@ into the predictions directory.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0.dev0"
 
 from ._roi_set import BUNDLES, CONFORMANCE_ROIS, ConformanceROI
 from .evaluator import (
