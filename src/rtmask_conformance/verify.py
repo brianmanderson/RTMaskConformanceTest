@@ -363,12 +363,14 @@ def verify_predictions(
         raise FileNotFoundError(f"Ground-truth directory not found: {gt_root}")
 
     return _score(
-        pred_root, [_RoiToScore(roi, gt_root / f"{roi}.nii.gz") for roi in rois], config
+        pred_root, [RoiTarget(roi, gt_root / f"{roi}.nii.gz") for roi in rois], config
     )
 
 
 @dataclass(frozen=True)
-class _RoiToScore:
+class RoiTarget:
+    """One ROI to score: its ground truth and the manifest fields that resolve its status."""
+
     roi: str
     gt_path: Path
     geometric_type: str | None = None
@@ -386,7 +388,7 @@ def summarize(results: list[ResultRecord]) -> dict[str, int]:
 
 def _score(
     pred_root: Path,
-    to_score: list[_RoiToScore],
+    to_score: list[RoiTarget],
     config: ConformanceConfig,
     fixture: dict | None = None,
 ) -> Report:
@@ -528,7 +530,26 @@ def verify_fixture(
             stacklevel=2,
         )
 
-    to_score: list[_RoiToScore] = []
+    to_score = fixture_targets(fixture_root, manifest, bundles=selected)
+    return _score(pred_root, to_score, config, fixture_summary(fixture_root, manifest, selected))
+
+
+def fixture_targets(
+    fixture_dir: str | Path,
+    manifest: FixtureManifest,
+    *,
+    bundles: list[str] | None = None,
+) -> list[RoiTarget]:
+    """The ROIs ``verify --fixture`` scores, in manifest order.
+
+    Every ROI of the selected ``bundles`` (default: all) with a binary-mask
+    ground truth, graded or not. An ungraded ROI without one is skipped; a
+    graded ROI without one raises ``NotImplementedError`` (no grader yet).
+    The pytest harness parametrizes over the same list.
+    """
+    root = Path(fixture_dir)
+    selected = _select_bundles(manifest, bundles)
+    targets: list[RoiTarget] = []
     for roi, entry in manifest.rois.items():
         if entry.bundle not in selected:
             continue
@@ -539,12 +560,11 @@ def verify_fixture(
             raise NotImplementedError(
                 f"{roi}: no grader for truth_kind {entry.truth_kind!r} in this version"
             )
-        to_score.append(_RoiToScore(
+        targets.append(RoiTarget(
             roi,
-            fixture_root / entry.truth_path,
+            root / entry.truth_path,
             geometric_type=entry.geometric_type,
             truth_kind=entry.truth_kind,
             graded=entry.graded,
         ))
-
-    return _score(pred_root, to_score, config, fixture_summary(fixture_root, manifest, selected))
+    return targets
