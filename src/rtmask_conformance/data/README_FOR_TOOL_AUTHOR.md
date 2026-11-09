@@ -42,8 +42,12 @@ verbatim as the output filename) will produce these names automatically.
 ## Verifying
 
 ```
-rtmask-conformance verify --predictions <your_predictions_dir> --groundtruth ./groundtruth
+rtmask-conformance verify --predictions <your_predictions_dir> --fixture .
 ```
+
+`--fixture` points at this directory: the verifier reads `manifest.json` and checks every
+ground-truth file against its recorded SHA-256 before scoring the ROIs it lists. The
+older form, `--groundtruth ./groundtruth`, still works but skips the manifest and the hash check.
 
 The verifier scores each ROI on Dice, Surface DSC @ 1 mm, Hausdorff 95, mean
 surface distance, and relative volume error, and exits 0 if every ROI passes

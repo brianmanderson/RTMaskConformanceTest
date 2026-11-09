@@ -11,7 +11,7 @@ Public surface:
 * :class:`MaskMetrics` — raw per-pair metrics, no thresholds applied.
 * :func:`evaluate_masks` — returns ``MaskMetrics``.
 * :func:`evaluate_masks_with_thresholds` — returns a ``ResultRecord`` with
-  PASS/FAIL status and human-readable violations.
+  PASS/FAIL (or REPORT_ONLY) status and human-readable violations.
 * :class:`GeometryMismatchError` — raised by ``evaluate_masks`` when both
   inputs carry geometry and that geometry disagrees.
 
@@ -29,7 +29,6 @@ from typing import Union
 import numpy as np
 import SimpleITK as sitk
 
-from ._roi_set import CONFORMANCE_ROIS
 from ._vendor.metrics import all_surface_metrics, binary_dsc, volume_metrics
 from .thresholds import ConformanceConfig, Thresholds, load_config
 from .verify import (
@@ -38,6 +37,7 @@ from .verify import (
     Status,
     _evaluate_against_thresholds,
     _geometry_diff,
+    as_report_only,
 )
 
 MaskLike = Union[np.ndarray, str, "os.PathLike[str]", sitk.Image]
@@ -198,10 +198,8 @@ def _resolve_thresholds(
                 f"{cfg.defaults!r} is missing required metric keys."
             ) from e
 
-    if roi in CONFORMANCE_ROIS:
-        return cfg.thresholds_for(roi), cfg
-
-    return Thresholds(**cfg.defaults), cfg  # type: ignore[arg-type]
+    # Per-primitive blocks may name any ROI; a ROI without one gets the defaults.
+    return cfg.thresholds_for(roi), cfg
 
 
 def evaluate_masks_with_thresholds(
@@ -214,6 +212,7 @@ def evaluate_masks_with_thresholds(
     config: ConformanceConfig | None = None,
     surface_dsc_tolerance_mm: float = 1.0,
     check_geometry: bool = True,
+    report_only: bool = False,
 ) -> ResultRecord:
     """Compute metrics and grade them against thresholds, returning a
     ``ResultRecord`` (the same dataclass used by :func:`evaluate_one`).
@@ -222,31 +221,38 @@ def evaluate_masks_with_thresholds(
         1. ``thresholds`` argument — a ``Thresholds`` instance, or a ``dict``
            shallow-merged over ``config.defaults`` (or the shipped defaults
            if ``config`` is None).
-        2. ``config.thresholds_for(roi)`` if ``roi`` is one of the seven
-           shipped ``CONFORMANCE_ROIS``.
-        3. ``config.defaults`` (the shipped baseline) for any other ``roi``.
+        2. ``config.thresholds_for(roi)``: the ``primitives`` block for ``roi``
+           shallow-merged over ``config.defaults``; any ROI name, and the
+           defaults alone when the config has no block for it.
 
     ``check_geometry=True`` causes a geometry mismatch to return a
     ``ResultRecord`` with ``Status.GEOMETRY_MISMATCH`` (mirroring
     :func:`evaluate_one`), rather than raising. Set ``False`` to skip the
     precheck entirely.
+
+    ``report_only=True`` scores the pair as usual but returns
+    ``Status.REPORT_ONLY`` whatever the outcome; ``violations`` and any
+    ``geometry_diagnostic`` still say what grading would have found.
+    A ``roi`` listed in the config's ``report_only`` is treated the same way.
     """
     pred_arr, pred_img = _coerce_mask(prediction)
     gt_arr, gt_img = _coerce_mask(ground_truth)
 
-    resolved, _ = _resolve_thresholds(thresholds=thresholds, config=config, roi=roi)
+    resolved, cfg = _resolve_thresholds(thresholds=thresholds, config=config, roi=roi)
     threshold_dict = resolved.as_dict()
+    report_only = report_only or cfg.is_report_only(roi)
 
     if check_geometry and pred_img is not None and gt_img is not None:
         diag = _geometry_diff(pred_img, gt_img, GEOMETRY_TOLERANCE_MM)
         if diag is not None:
-            return ResultRecord(
+            record = ResultRecord(
                 roi=roi,
                 status=Status.GEOMETRY_MISMATCH,
                 thresholds=threshold_dict,
                 violations=["geometry does not match ground truth"],
                 geometry_diagnostic=diag,
             )
+            return as_report_only(record) if report_only else record
 
     spacing = _resolve_spacing(pred_img, gt_img, spacing_xyz)
     metrics = _compute_metrics(pred_arr, gt_arr, spacing, surface_dsc_tolerance_mm)
@@ -265,10 +271,11 @@ def evaluate_masks_with_thresholds(
     }
 
     violations = _evaluate_against_thresholds(metrics_for_grade, resolved)
-    return ResultRecord(
+    record = ResultRecord(
         roi=roi,
         status=Status.PASS if not violations else Status.FAIL,
         metrics=metrics_for_grade,
         thresholds=threshold_dict,
         violations=violations,
     )
+    return as_report_only(record) if report_only else record

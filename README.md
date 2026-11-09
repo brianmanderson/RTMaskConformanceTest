@@ -11,7 +11,7 @@ language-agnostic, in three steps:
 
 1. `rtmask-conformance generate <fixture_dir>` writes the fixture (CT + RTSTRUCT + GT).
 2. Run your converter against the fixture; have it emit one `<roi>.nii.gz` per ROI into a predictions directory.
-3. `rtmask-conformance verify --predictions <pred_dir> --groundtruth <fixture_dir>/groundtruth` scores each ROI and exits `0` (pass) or `1` (fail).
+3. `rtmask-conformance verify --predictions <pred_dir> --fixture <fixture_dir>` checks the ground truth against the fixture's `manifest.json`, scores each ROI, and exits `0` (pass) or `1` (fail). The older form, `--groundtruth <fixture_dir>/groundtruth`, still works without the manifest and its hash check.
 
 Because ground truth is computed analytically rather than by a competing
 converter, the measurement is independent of the tool under test. That
@@ -156,8 +156,18 @@ fixture it scored (package version, git SHA, quadrature, bundles) in the report.
 `--bundle <name>` (repeatable) restricts scoring to those bundles. The v0.1 form,
 `--groundtruth ./fixture/groundtruth`, still works: no manifest, no hash check.
 
-Exit codes: `0` all ROIs PASS, `1` any FAIL/MISSING/GEOMETRY_MISMATCH, `2` usage error
-(including ground truth that fails its manifest hash check).
+Exit codes: `0` no ROI failed, `1` any ROI is `FAIL`, `MISSING` or `GEOMETRY_MISMATCH`,
+`2` usage error (including ground truth that fails its manifest hash check, or a malformed
+`--config`). `--report-only` forces `0`. Each ROI gets one of six statuses:
+
+| Status | Meaning | Fails the run? |
+|---|---|---|
+| `PASS` | Every metric met its threshold. | no |
+| `FAIL` | At least one metric missed its threshold (listed under Details). | yes |
+| `MISSING` | No `<roi>.nii.gz` in the predictions, and the ROI's geometric type is claimed. | yes |
+| `GEOMETRY_MISMATCH` | The prediction's origin, spacing, size or direction differs from the ground truth by more than 1e-4 mm, so it was not scored. | yes |
+| `UNSUPPORTED_TYPE` | No prediction, and the ROI's geometric type is not in your `claims:`; the tool declined a type it does not support. | no |
+| `REPORT_ONLY` | The ROI is in `report_only:` (or the fixture marks it ungraded): scored and reported when possible, never graded. | no |
 
 See the file `README_FOR_TOOL_AUTHOR.md` written into the fixture directory for the
 complete contract a tool author must satisfy.
@@ -168,7 +178,10 @@ Defaults ship in `src/rtmask_conformance/data/default_thresholds.yaml`. Override
 your own YAML and pass `--config conformance.yaml`:
 
 ```yaml
-schema_version: 1
+schema_version: 2
+claims:
+  geometric_types: [CLOSED_PLANAR, OPEN_PLANAR]   # the contour types your tool supports
+report_only: [torus]                              # ROI names or geometric types
 defaults:
   dice: 0.95
   surface_dice_1mm: 0.95
@@ -180,8 +193,15 @@ primitives:
     dice: 0.90        # relax for tools known to struggle with toroidal cross-sections
 ```
 
-Per-primitive overrides shallow-merge over `defaults`. Unknown `schema_version` is
-rejected.
+Per-primitive overrides shallow-merge over `defaults` and may name any ROI. `claims:`
+lists the Contour Geometric Type values your tool supports (`CLOSED_PLANAR`,
+`CLOSEDPLANAR_XOR`, `OPEN_PLANAR`, `OPEN_NONPLANAR`, `POINT`); a ROI of an unclaimed type
+for which your tool writes nothing is `UNSUPPORTED_TYPE` rather than `MISSING`, and the
+default claims all five. `report_only:` lists ROI names or geometric types to score and
+report without grading; your list adds to the shipped one, while your `claims:` replace
+the shipped claims. Every verify report records the claims and the `report_only` list it
+used. A `schema_version: 1` file still loads and claims every type; `claims:` and
+`report_only:` need `schema_version: 2`, and an unknown `schema_version` is rejected.
 
 ## Use as a pytest module
 
