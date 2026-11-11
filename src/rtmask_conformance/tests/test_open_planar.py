@@ -11,12 +11,6 @@ Three groups of tests:
   trace of the emitted polyline on its slice) must pass them, each ceiling
   must be twice the error that rasteriser measures, and the arc closed into a
   filled polygon must fail.
-
-The ceiling tests call ``arc_length_metrics`` / ``curve_metrics`` from the
-vendored metrics, and the registration test needs the ``pointline`` bundle;
-both arrive with the pointline bundle. Until then those tests are
-``xfail(strict=True)``, so they turn into failures, and must be unmarked, the
-moment that support lands.
 """
 
 from __future__ import annotations
@@ -47,14 +41,6 @@ ARC = "open_arc_r40_90deg_x380_y300_z180"
 
 _SPEC = ReferenceCTSpec()
 GEOMETRY = Geometry(origin=_SPEC.origin, spacing=_SPEC.voxel_size, size=_SPEC.size)
-
-#: Why the ceiling tests are expected to fail until the pointline bundle lands.
-_NEEDS_CURVE_METRICS = pytest.mark.xfail(
-    strict=True,
-    raises=ImportError,
-    reason="arc_length_metrics / curve_metrics are vendored with the pointline bundle",
-)
-
 
 def _rois() -> dict[str, ConformanceROI]:
     return {roi.name: roi for roi in _open_planar_rois()}
@@ -254,7 +240,6 @@ def test_rtstruct_contour_lies_on_one_slice(
 # --------------------------------------------------------------------------
 
 
-@_NEEDS_CURVE_METRICS
 @pytest.mark.parametrize("name", [LINE, ARC])
 def test_ceiling_is_twice_the_ideal_discretisation_error(name: str) -> None:
     primitive = _rois()[name].primitive
@@ -265,7 +250,6 @@ def test_ceiling_is_twice_the_ideal_discretisation_error(name: str) -> None:
     assert ceiling == pytest.approx(2.0 * measured, abs=0.01)
 
 
-@_NEEDS_CURVE_METRICS
 @pytest.mark.parametrize("name", [LINE, ARC])
 def test_ideal_rasterisation_traces_the_curve(name: str) -> None:
     from rtmask_conformance._vendor.metrics import curve_metrics, densify_polyline
@@ -280,7 +264,6 @@ def test_ideal_rasterisation_traces_the_curve(name: str) -> None:
     assert cm.voxel_to_curve_max_mm < 1.0
 
 
-@_NEEDS_CURVE_METRICS
 def test_closed_filled_arc_fails_on_arc_length() -> None:
     arc = _rois()[ARC].primitive
     filled = closed_filled_mask(arc)
@@ -288,7 +271,6 @@ def test_closed_filled_arc_fails_on_arc_length() -> None:
     assert _arc_length_error_pct(filled, arc) > _ceiling(ARC)
 
 
-@pytest.mark.xfail(strict=True, reason="added to BUNDLES with the pointline bundle")
 def test_registered_in_pointline_bundle() -> None:
     registered = {roi.name: roi for roi in BUNDLES["pointline"]}
     for name in (LINE, ARC):

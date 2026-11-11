@@ -1,12 +1,13 @@
 upstream_repo: https://github.com/brianmanderson/Dicom_RT_Images_Csharp
 upstream_path: PythonCode/src/rtmask_validation
-upstream_commit: 150ac59dcafbb7e31d9e6a07030eb2cf51968d38
-synced_on: 2026-11-06
+upstream_commit: 08ae2eb5ede592852fd20fddabc079c5f6f4d033
+synced_on: 2026-11-10
 notes: |
-  First full re-sync since v0.1 (8f7a47e, 2026-05-04), to pick up the standard Contour
-  Geometric Type spelling CLOSEDPLANAR_XOR (was CLOSED_PLANAR_XOR) and the non-standard
-  labelling of CLOSED_NONPLANAR. The vendored module set is unchanged. The v0.1 copies were
-  hand-trimmed, so this sync also restores upstream docstrings verbatim, and brings in the
-  additive any_overlap_mask / reference_volume_mm3 / surface_dsc helpers and upstream's
-  RTSTRUCT branding (Manufacturer "rtmask_validation", OperatorsName). The generated
-  reference CT and ground-truth masks are byte-identical to v0.1's.
+  Adds the POINT primitives (primitives/point.py; primitives/open_nonplanar.py and
+  primitives/open_planar.py were already vendored, unchanged here) and keeps the point, curve and arc-length metrics
+  in metrics.py (densify_polyline, point_metrics, curve_metrics,
+  arc_length_metrics); the slim now drops only consensus_mask. The previously
+  vendored modules are byte-identical to the 150ac59 sync, so the planar bundle's
+  ground truth and RTSTRUCT contour data are unchanged. Synced from 08ae2eb, the
+  last upstream main merge before the RTSTRUCT writer's reproducible-timestamp and
+  12-digit ContourData change; that writer change is picked up by a later sync.

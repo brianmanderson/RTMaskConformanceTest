@@ -51,9 +51,62 @@ primitives:
     hd95_mm: 2.5
     volume_rel_err: 0.05
 
-# Curve and point ROIs (the `pointline` bundle), graded on curve / point
-# metrics, never Dice. One sub-block per ROI name.
+# Curve and point ROIs (truth_kind `curve` or `points`; see grading_pointline.py).
+# Dice does not apply to a zero-volume ROI, so these are graded on their own
+# metrics, one sub-block per ROI name; the metrics a sub-block names are the ones
+# graded. A user YAML's `pointline.<roi>` block shallow-merges over these.
+# Recalls are floors; everything else is a ceiling. Values assume the fixture's
+# 1 mm isotropic grid.
+#
+# POINT and OPEN_NONPLANAR: calibrated 2026-11-10 with
+# tools/calibrate_pointline_thresholds.py from an upstream forward-benchmark run
+# over these exact seven primitives (OPEN_PLANAR: see its own comment below):
+# - Curves. The positive calibrators are the two rasterisers that trace a thin
+#   path (every marked voxel within one voxel diagonal of the curve, on all four
+#   curves). Each ceiling is their worst value over the four curves x 1.5,
+#   rounded up (0.05 mm, 0.5 %):
+#     arc_length_error_pct          worst 10.41  -> 16.0
+#     curve_max_distance_mm         worst 0.999  -> 1.5
+#     curve_voxel_to_curve_mean_mm  worst 0.625  -> 0.95
+#   The two rasterisers that fill the polygon the curve's vertices span score
+#   58-794 % on arc length, so they fail every curve.
+# - Points. The positive calibrators are the three tools that write a non-empty
+#   mask for the point ROIs; they agree exactly. Every seed must be found
+#   (point_recall floor 1.0, no margin: one missed seed is a defect).
+#     point_max_displacement_mm     worst 0.636  -> 1.0
+#   point_fp_rate is reported, not graded.
+# One ceiling per family, written into every sub-block: several primitives score
+# exactly 0 for every positive calibrator (an axis-aligned needle, a point on a
+# voxel centre), so a per-primitive multiple would leave no tolerance. The
+# suite's own reference rasterisation scores at most 6.9 % arc length error,
+# 0.75 mm curve distance, 0.48 mm voxel-to-curve mean and 0.64 mm point
+# displacement.
 pointline:
+  single_point_x256_y256_z150:
+    point_recall: 1.0
+    point_max_displacement_mm: 1.0
+  needle_track_10pts_x150_y150:
+    point_recall: 1.0
+    point_max_displacement_mm: 1.0
+  ldr_seed_implant_x350_y350:
+    point_recall: 1.0
+    point_max_displacement_mm: 1.0
+  diagonal_needle_x100_y200_z40:
+    arc_length_error_pct: 16.0
+    curve_max_distance_mm: 1.5
+    curve_voxel_to_curve_mean_mm: 0.95
+  helix_r12_pitch6_4turns_x300_y200:
+    arc_length_error_pct: 16.0
+    curve_max_distance_mm: 1.5
+    curve_voxel_to_curve_mean_mm: 0.95
+  sinusoid_x150_y350_z20to80:
+    arc_length_error_pct: 16.0
+    curve_max_distance_mm: 1.5
+    curve_voxel_to_curve_mean_mm: 0.95
+  syed_bundle_5needles_x400_y100_z50:
+    arc_length_error_pct: 16.0
+    curve_max_distance_mm: 1.5
+    curve_voxel_to_curve_mean_mm: 0.95
   # OPEN_PLANAR. Each arc_length_error_pct ceiling is twice the error of the
   # suite's ideal rasteriser (a one-voxel-wide, 8-connected Bresenham trace of
   # the emitted polyline on its slice, scored by arc_length_metrics), measured

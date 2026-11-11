@@ -28,8 +28,9 @@ classifiers = [
 dependencies = [
     "pydicom>=3.0",
     "SimpleITK>=2.4",
-    "numpy>=1.26",
+    "numpy>=2.0",
     "scipy>=1.13",
+    "scikit-image>=0.24",
     "pyyaml>=6",
     "trimesh>=4",
 ]

@@ -108,21 +108,42 @@ two XOR primitives and will fail conformance loudly — that is a feature, not a
 
 ### Curve and point ROIs (`pointline` bundle)
 
-Graded on curve and point metrics, never Dice. The two `OPEN_PLANAR` ROIs are defined and
-calibrated; they ship in `rtstruct/primitives_pointline.dcm` once the bundle's curve ground
-truth and grader are in place.
+Shipped in `rtstruct/primitives_pointline.dcm`. These ROIs enclose no volume, so they are
+graded on curve and point metrics, never Dice, against analytic truth written as JSON
+(`groundtruth_curves/<roi>.json`: the densified curve, its endpoints and its analytic
+arc length; `groundtruth_points/<roi>.json`: the point coordinates). Your tool still writes
+one binary mask per ROI. `groundtruth/<roi>.nii.gz` holds the suite's own thin-path
+rasterisation of each one as an example of a passing mask; it is not what is scored against.
 
 | ROI name | Contour Geometric Type | What it models | Graded on |
 |---|---|---|---|
+| `single_point_x256_y256_z150` | `POINT` | one fiducial marker on a voxel centre | point recall = 1; max point displacement ≤ 1.0 mm |
+| `needle_track_10pts_x150_y150` | `POINT` | 10 seeds about 5 mm apart along a gently curved, oblique needle track | point recall = 1; max point displacement ≤ 1.0 mm |
+| `ldr_seed_implant_x350_y350` | `POINT` | 147 seeds in 7 axial planes 5 mm apart, packed inside an elliptical cross-section (a seed-implant pattern) | point recall = 1; max point displacement ≤ 1.0 mm |
+| `diagonal_needle_x100_y200_z40` | `OPEN_NONPLANAR` | straight needle (80, 180, 30)→(160, 240, 70) mm, oblique to all three axes, 107.7 mm long | arc-length error ≤ 16 %; max curve distance ≤ 1.5 mm; mean voxel-to-curve distance ≤ 0.95 mm |
+| `helix_r12_pitch6_4turns_x300_y200` | `OPEN_NONPLANAR` | four-turn helix, r = 12 mm, pitch 6 mm, 302.5 mm long | as above |
+| `sinusoid_x150_y350_z20to80` | `OPEN_NONPLANAR` | path oscillating in x (±8 mm) and y (±4 mm) as z runs 20→80 mm, 110.5 mm long | as above |
+| `syed_bundle_5needles_x400_y100_z50` | `OPEN_NONPLANAR` | applicator bundle: five parallel 60 mm needles 7 mm apart, one ROI with five contours | as above |
 | `line_segment_x200_y200_to_x300_y280_z175` | `OPEN_PLANAR` | straight segment (200, 200)→(300, 280) mm on the z = 175 mm slice, 128.06 mm long | arc-length error ≤ 7.93 % |
 | `open_arc_r40_90deg_x380_y300_z180` | `OPEN_PLANAR` | 90° circular arc, r = 40 mm about (380, 300) mm on the z = 180 mm slice, 62.83 mm long | arc-length error ≤ 11.76 % |
 
-Each arc-length ceiling is twice the error of an ideal one-voxel-wide rasterisation at 1 mm.
-A tool that reads an open contour as closed and fills it fails (21 % on the arc).
+Point metrics: **recall** (fraction of points with a marked voxel within one voxel
+diagonal), **mean / max displacement** (point to nearest marked voxel) and **false-positive
+rate** (marked voxels farther than a voxel diagonal from every point; reported, not graded).
+Curve metrics: **coverage recall** and **mean / max curve distance** (analytic curve to nearest
+marked voxel), **mean voxel-to-curve distance** (marked voxel to nearest point of the curve),
+and **arc-length error** (length of the mask's skeleton against the analytic arc length).
+A tool that reads an open curve as a closed polygon and fills it fails on arc length; an
+empty mask for a claimed type fails; an empty or absent mask for a type your YAML does not
+claim is `UNSUPPORTED_TYPE`. Thresholds live in the YAML's `pointline:` block, one sub-block
+per ROI (see [Custom thresholds](#custom-thresholds)). The `POINT` and `OPEN_NONPLANAR`
+ceilings carry a 1.5× margin over the worst value of the thin-path rasterisers they were
+calibrated against; each `OPEN_PLANAR` ceiling is twice the error of an ideal one-voxel-wide
+rasterisation at 1 mm.
 
 ### Metrics
 
-Each ROI is scored on:
+Each closed-planar ROI is scored on:
 
 - **Dice** (volumetric)
 - **Surface DSC @ 1 mm** (Nikolov-style, tolerance-bounded)
@@ -141,7 +162,7 @@ voxel labeling, and surfacing them separately is more diagnostic.
 pip install git+https://github.com/brianmanderson/RTMaskConformanceTest
 ```
 
-Requires Python ≥ 3.10. Runtime deps: `pydicom`, `SimpleITK`, `numpy`, `scipy`, `pyyaml`.
+Requires Python ≥ 3.10. Runtime deps: `pydicom`, `SimpleITK`, `numpy`, `scipy`, `scikit-image`, `pyyaml`.
 
 ## Quick start
 
