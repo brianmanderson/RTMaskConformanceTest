@@ -40,6 +40,7 @@ FILES_TO_VENDOR: list[tuple[str, str]] = [
     ("primitives/base.py", "primitives/base.py"),
     ("primitives/closed_planar.py", "primitives/closed_planar.py"),
     ("primitives/closed_planar_xor.py", "primitives/closed_planar_xor.py"),
+    ("primitives/point.py", "primitives/point.py"),
     ("primitives/open_nonplanar.py", "primitives/open_nonplanar.py"),
     ("primitives/open_planar.py", "primitives/open_planar.py"),
     ("refimage/uid_hierarchy.py", "refimage/uid_hierarchy.py"),
@@ -66,31 +67,36 @@ def _guarded(dst: Path, vendor_root: Path, version_file: Path) -> Path:
 
 
 def _slim_metrics(src_text: str) -> str:
-    """Strip metrics.py down to the closed-shape subset.
+    """Drop the inter-tool agreement section from metrics.py.
 
-    Drops ``point_metrics``, ``curve_metrics``, ``arc_length_metrics``,
-    ``consensus_mask``, and the helpers/imports they need (``Geometry``,
-    ``cKDTree``, ``densify_polyline``, ``skimage``).
+    Keeps the closed-shape metrics (volume, Dice, surface) and the point,
+    curve and arc-length metrics with their helpers (``densify_polyline``,
+    ``point_metrics``, ``curve_metrics``, ``arc_length_metrics``). Drops only
+    ``consensus_mask``, the benchmark's multi-tool majority vote, which the
+    suite never calls.
 
-    Best-effort: if the upstream layout drifts, this raises and you re-do the
-    slim by hand.
+    The section is bracketed by two upstream comment banners: it starts at the
+    "Inter-tool agreement helpers" banner and ends just before the "Helpers
+    shared by point/curve metrics" banner. Best-effort: if the upstream layout
+    drifts, this raises and you re-do the slim by hand.
     """
     lines = src_text.splitlines(keepends=True)
-    # Cut everything from the first "Inter-tool agreement" or "point/curve metrics"
-    # banner onward. Those banners exist in upstream metrics.py and bracket the
-    # closed-shape section above from the curve/point section below.
-    cut_marker = "#  Inter-tool agreement helpers"
-    for i, line in enumerate(lines):
-        if cut_marker in line:
-            kept = "".join(lines[: i - 1])  # drop the comment-banner separator too
-            # Upstream metrics.py lives in benchmark/, one level below the package
-            # root; the vendored copy sits at _vendor/ root, so its parent-relative
-            # imports (``from ..common.coords import ...``) move up one level.
-            return re.sub(r"^from \.\.(?=\w)", "from .", kept, flags=re.MULTILINE)
-    raise RuntimeError(
-        f"Could not find slim cut marker {cut_marker!r} in upstream metrics.py — "
-        "upstream layout has drifted. Re-do the slim manually."
-    )
+    cut_start = "#  Inter-tool agreement helpers"
+    cut_end = "#  Helpers shared by point/curve metrics"
+    start = next((i for i, line in enumerate(lines) if cut_start in line), None)
+    end = next((i for i, line in enumerate(lines) if cut_end in line), None)
+    if start is None or end is None or end <= start:
+        raise RuntimeError(
+            f"Could not find the slim banners {cut_start!r} .. {cut_end!r} in upstream "
+            "metrics.py — upstream layout has drifted. Re-do the slim manually."
+        )
+    # Each banner is three lines: a dashed rule, the title, a dashed rule. Cut from
+    # the first banner's opening rule to the second banner's opening rule.
+    kept = "".join(lines[: start - 1] + lines[end - 1 :])
+    # Upstream metrics.py lives in benchmark/, one level below the package
+    # root; the vendored copy sits at _vendor/ root, so its parent-relative
+    # imports (``from ..common.coords import ...``) move up one level.
+    return re.sub(r"^from \.\.(?=\w)", "from .", kept, flags=re.MULTILINE)
 
 
 def main() -> int:
@@ -139,7 +145,7 @@ def main() -> int:
     src_metrics = upstream_pkg / "benchmark" / "metrics.py"
     metrics_slim = _slim_metrics(src_metrics.read_text(encoding="utf-8"))
     dst_metrics.write_text(metrics_slim, encoding="utf-8")
-    print("copied  benchmark/metrics.py (slimmed to closed-shape subset)")
+    print("copied  benchmark/metrics.py (slimmed: consensus_mask dropped)")
 
     # Capture upstream commit.
     try:

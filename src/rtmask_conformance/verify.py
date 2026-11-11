@@ -32,6 +32,15 @@ Each ROI resolves to one :class:`Status`, in this order:
 5. otherwise ``PASS`` or ``FAIL`` against the thresholds.
 
 ``MISSING``, ``GEOMETRY_MISMATCH`` and ``FAIL`` are failures; the other three are not.
+
+The ROI's ``truth_kind`` picks the grader. ``binary_mask`` ROIs are scored on
+Dice, surface metrics and volume against a NIfTI. ``curve`` and ``points`` ROIs
+are scored on curve, arc-length and point metrics against the analytic truth
+JSON (:mod:`rtmask_conformance.grading_pointline`), with thresholds from the
+YAML's ``pointline:`` block. Two rules differ there: an all-zero prediction
+counts as no output, so it is ``UNSUPPORTED_TYPE`` for an unclaimed type and
+``FAIL`` for a claimed one; and the geometry check is against the grid recorded
+in the truth JSON.
 """
 
 from __future__ import annotations
@@ -46,7 +55,9 @@ import numpy as np
 import SimpleITK as sitk
 
 from . import __version__
+from . import grading_pointline as pointline
 from ._roi_set import BUNDLES, CONFORMANCE_ROIS
+from ._vendor.common.io import sitk_image_to_geometry
 from ._vendor.metrics import all_surface_metrics, binary_dsc, volume_metrics
 from .manifest import FixtureManifest, read_manifest
 from .thresholds import ConformanceConfig, Thresholds, load_config
@@ -169,17 +180,35 @@ def _resolve_prediction_path(predictions_dir: Path, roi: str) -> Path | None:
 
 def _geometry_diff(pred: sitk.Image, gt: sitk.Image, tol_mm: float) -> str | None:
     """Return ``None`` if geometries agree within ``tol_mm``, else a diagnostic string."""
+    return _geometry_diff_to(
+        pred,
+        {
+            "size": gt.GetSize(),
+            "origin": gt.GetOrigin(),
+            "spacing": gt.GetSpacing(),
+            "direction": gt.GetDirection(),
+        },
+        tol_mm,
+    )
+
+
+def _geometry_diff_to(pred: sitk.Image, ref: dict, tol_mm: float) -> str | None:
+    """:func:`_geometry_diff` against a reference grid given as a mapping.
+
+    ``ref`` holds ``size``, ``origin``, ``spacing`` and ``direction``, the
+    layout of a manifest's or a truth JSON's ``geometry`` block.
+    """
     diffs: list[str] = []
 
     pred_size = tuple(int(v) for v in pred.GetSize())
-    gt_size = tuple(int(v) for v in gt.GetSize())
+    gt_size = tuple(int(v) for v in ref["size"])
     if pred_size != gt_size:
         diffs.append(f"size: pred={pred_size} gt={gt_size}")
 
     for label, pred_t, gt_t in (
-        ("origin", pred.GetOrigin(), gt.GetOrigin()),
-        ("spacing", pred.GetSpacing(), gt.GetSpacing()),
-        ("direction", pred.GetDirection(), gt.GetDirection()),
+        ("origin", pred.GetOrigin(), tuple(ref["origin"])),
+        ("spacing", pred.GetSpacing(), tuple(ref["spacing"])),
+        ("direction", pred.GetDirection(), tuple(ref["direction"])),
     ):
         diff = max(abs(p - g) for p, g in zip(pred_t, gt_t, strict=True))
         if diff > tol_mm:
@@ -271,6 +300,11 @@ def evaluate_one(
     """
     if geometric_type is None:
         geometric_type = _KNOWN_GEOMETRIC_TYPES.get(roi)
+    if truth_kind in pointline.POINTLINE_TRUTH_KINDS:
+        return _evaluate_pointline(
+            roi, prediction_path, groundtruth_path, config,
+            geometric_type=geometric_type, truth_kind=truth_kind, graded=graded,
+        )
     thresholds = config.thresholds_for(roi)
     common = {
         "roi": roi,
@@ -291,6 +325,96 @@ def evaluate_one(
     if not graded or config.is_report_only(roi, geometric_type):
         return as_report_only(record)
     return record
+
+
+def _evaluate_pointline(
+    roi: str,
+    prediction_path: str | Path | None,
+    truth_path: str | Path,
+    config: ConformanceConfig,
+    *,
+    geometric_type: str | None,
+    truth_kind: str,
+    graded: bool,
+) -> ResultRecord:
+    """:func:`evaluate_one` for a curve or point ROI (status order in the module docstring)."""
+    thresholds = pointline.thresholds_for(config.config_source, roi, truth_kind)
+    common = {
+        "roi": roi,
+        "thresholds": thresholds,
+        "groundtruth_path": str(truth_path),
+        "geometric_type": geometric_type,
+        "truth_kind": truth_kind,
+    }
+    claimed = config.claims(geometric_type)
+    if prediction_path is None:
+        if not claimed:
+            return ResultRecord(
+                status=Status.UNSUPPORTED_TYPE,
+                violations=[f"no prediction; geometric type {geometric_type} is not claimed"],
+                **common,
+            )
+        record = ResultRecord(
+            status=Status.MISSING,
+            violations=[f"prediction file <predictions>/{roi}.nii.gz not found"],
+            **common,
+        )
+    else:
+        record = _grade_pointline(prediction_path, truth_path, thresholds, common)
+        if not claimed and record.metrics.get("n_marked_voxels") == 0:
+            return ResultRecord(
+                status=Status.UNSUPPORTED_TYPE,
+                violations=[f"empty prediction; geometric type {geometric_type} is not claimed"],
+                prediction_path=str(prediction_path),
+                **common,
+            )
+    if not graded or config.is_report_only(roi, geometric_type):
+        return as_report_only(record)
+    return record
+
+
+def _grade_pointline(
+    prediction_path: str | Path,
+    truth_path: str | Path,
+    thresholds: dict[str, float],
+    common: dict,
+) -> ResultRecord:
+    """GEOMETRY_MISMATCH, PASS or FAIL for a curve or point ROI that has a prediction."""
+    truth = pointline.read_truth(truth_path)
+    pred_img = sitk.ReadImage(str(prediction_path))
+    geom_diag = _geometry_diff_to(pred_img, truth["geometry"], GEOMETRY_TOLERANCE_MM)
+    if geom_diag is not None:
+        return ResultRecord(
+            status=Status.GEOMETRY_MISMATCH,
+            violations=["geometry does not match ground truth"],
+            geometry_diagnostic=geom_diag,
+            prediction_path=str(prediction_path),
+            **common,
+        )
+
+    pred_arr = sitk.GetArrayFromImage(pred_img)
+    if not np.any(pred_arr):
+        metrics: dict[str, float | None] = dict.fromkeys(
+            pointline.METRIC_KEYS_BY_KIND[common["truth_kind"]]
+        )
+        metrics["n_marked_voxels"] = 0
+        return ResultRecord(
+            status=Status.FAIL,
+            metrics=metrics,
+            violations=["empty mask: no voxels marked for a claimed geometric type"],
+            prediction_path=str(prediction_path),
+            **common,
+        )
+
+    metrics = pointline.compute_metrics(pred_arr, truth, sitk_image_to_geometry(pred_img))
+    violations = pointline.violations(metrics, thresholds)
+    return ResultRecord(
+        status=Status.PASS if not violations else Status.FAIL,
+        metrics=metrics,
+        violations=violations,
+        prediction_path=str(prediction_path),
+        **common,
+    )
 
 
 def _grade(
@@ -502,8 +626,9 @@ def verify_fixture(
     selected ``bundles`` (default: all) against the recorded SHA-256s, and
     scores the manifest's ROIs in those bundles exactly as
     :func:`verify_predictions` does. A ROI the manifest records as
-    ``graded: false`` is scored as ``REPORT_ONLY`` when it has a binary-mask
-    ground truth, and skipped otherwise. A fixture written by a different
+    ``graded: false`` is scored as ``REPORT_ONLY`` when it has a ground truth
+    the verifier can grade (binary mask, curve or points), and skipped
+    otherwise. A fixture written by a different
     package version is scored, with a warning.
     """
     config = config or load_config()
@@ -534,6 +659,10 @@ def verify_fixture(
     return _score(pred_root, to_score, config, fixture_summary(fixture_root, manifest, selected))
 
 
+#: Truth kinds :func:`evaluate_one` can grade.
+SCORABLE_TRUTH_KINDS: tuple[str, ...] = ("binary_mask", *pointline.POINTLINE_TRUTH_KINDS)
+
+
 def fixture_targets(
     fixture_dir: str | Path,
     manifest: FixtureManifest,
@@ -542,10 +671,11 @@ def fixture_targets(
 ) -> list[RoiTarget]:
     """The ROIs ``verify --fixture`` scores, in manifest order.
 
-    Every ROI of the selected ``bundles`` (default: all) with a binary-mask
-    ground truth, graded or not. An ungraded ROI without one is skipped; a
-    graded ROI without one raises ``NotImplementedError`` (no grader yet).
-    The pytest harness parametrizes over the same list.
+    Every ROI of the selected ``bundles`` (default: all) with a ground truth
+    the verifier can grade (:data:`SCORABLE_TRUTH_KINDS`), graded or not. An
+    ungraded ROI without one is skipped; a graded ROI without one raises
+    ``NotImplementedError`` (no grader yet). The pytest harness parametrizes
+    over the same list.
     """
     root = Path(fixture_dir)
     selected = _select_bundles(manifest, bundles)
@@ -553,7 +683,7 @@ def fixture_targets(
     for roi, entry in manifest.rois.items():
         if entry.bundle not in selected:
             continue
-        scorable = entry.truth_kind == "binary_mask" and entry.truth_path is not None
+        scorable = entry.truth_kind in SCORABLE_TRUTH_KINDS and entry.truth_path is not None
         if not scorable:
             if not entry.graded:
                 continue  # shipped for information; nothing to score against

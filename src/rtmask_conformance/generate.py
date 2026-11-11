@@ -6,9 +6,14 @@ expects:
     <out_dir>/
       refct/                              200 DICOM CT slices
       rtstruct/primitives_<bundle>.dcm    one RTSTRUCT per populated bundle
-                                          (v0.2: only ``planar``, all 7 ROIs)
       groundtruth/<roi>.nii.gz            binary masks (uint8, PV >= 0.5) for
-                                          every ROI whose truth_kind is binary_mask
+                                          every ROI whose truth_kind is binary_mask;
+                                          for curve and point ROIs, the suite's own
+                                          reference rasterisation (an example of a
+                                          passing mask, never scored against)
+      groundtruth_curves/<roi>.json       analytic truth of each curve ROI: densified
+                                          polylines, endpoints, analytic arc length
+      groundtruth_points/<roi>.json       analytic truth of each point ROI
       specs/<roi>.json                    analytic spec metadata + bundle fields
       manifest.json                       bundles, ROIs, sha256s, generator settings
       README_FOR_TOOL_AUTHOR.md           drop-in instructions for converters
@@ -28,6 +33,13 @@ from ._vendor.common.io import sha256_file, write_nifti
 from ._vendor.groundtruth.partial_volume import binary_threshold, partial_volume_mask
 from ._vendor.refimage.build_reference_ct import ReferenceCTSpec, build_reference_ct
 from ._vendor.rtstruct.pydicom_writer import build_rtstruct
+from .grading_pointline import (
+    POINTLINE_TRUTH_KINDS,
+    TRUTH_DIRS,
+    build_truth,
+    reference_rasterisation,
+    write_truth,
+)
 from .manifest import (
     MANIFEST_VERSION,
     BundleEntry,
@@ -102,14 +114,25 @@ def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None
                 truth_rel = f"groundtruth/{roi.name}.nii.gz"
                 write_nifti(binary, geometry, out / truth_rel)
                 truth_sha = sha256_file(out / truth_rel)
+            elif roi.truth_kind in POINTLINE_TRUTH_KINDS:
+                truth = build_truth(roi.primitive, roi.truth_kind, geometry)
+                truth_rel = f"{TRUTH_DIRS[roi.truth_kind]}/{roi.name}.json"
+                write_truth(truth, out / truth_rel)
+                truth_sha = sha256_file(out / truth_rel)
+                write_nifti(
+                    reference_rasterisation(truth), geometry, gt_dir / f"{roi.name}.nii.gz"
+                )
             elif roi.truth_kind != "none":
                 raise NotImplementedError(
                     f"{roi.name}: no ground-truth writer for truth_kind {roi.truth_kind!r}"
                 )
 
             spec_dict = roi.primitive.to_spec_dict()
-            spec_dict["pv_quadrature_per_axis"] = options.n_quadrature
-            spec_dict["pv_threshold"] = PV_THRESHOLD
+            if roi.truth_kind == "binary_mask":
+                spec_dict["pv_quadrature_per_axis"] = options.n_quadrature
+                spec_dict["pv_threshold"] = PV_THRESHOLD
+            elif roi.truth_kind in POINTLINE_TRUTH_KINDS:
+                spec_dict["reference_rasterisation"] = f"groundtruth/{roi.name}.nii.gz"
             spec_dict["bundle"] = bundle
             spec_dict["geometric_type"] = roi.geometric_type.value
             spec_dict["truth_kind"] = roi.truth_kind
