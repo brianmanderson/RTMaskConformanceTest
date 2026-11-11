@@ -26,7 +26,8 @@ Version 2 layout (all paths relative to the fixture directory)::
                   "truth_path": "groundtruth/<roi>.nii.gz" | null,
                   "truth_sha256": "..." | null,
                   "spec_path": "specs/<roi>.json",
-                  "expected_prediction": "<roi>.nii.gz" | null}
+                  "expected_prediction": "<roi>.nii.gz" | null,
+                  "reference_mask_path": "reference_masks/<roi>.nii.gz" | null}
       }
     }
 
@@ -71,6 +72,9 @@ class RoiEntry:
     truth_sha256: str | None
     spec_path: str | None = None
     expected_prediction: str | None = None  # filename the tool must write; None if ungraded
+    # An example of a passing mask (the suite's own rasterisation) for ROIs whose
+    # truth is not a mask (curves, points). Never scored against; not truth.
+    reference_mask_path: str | None = None
 
 
 @dataclass

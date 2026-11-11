@@ -355,8 +355,10 @@ def test_fixture_writes_curve_and_point_truth(fixture: Path) -> None:
         spec = json.loads((fixture / entry.spec_path).read_text(encoding="utf-8"))
         assert spec["truth_kind"] == roi.truth_kind
         assert "pv_threshold" not in spec
-        # The reference rasterisation ships next to the binary truths, as an example.
-        assert (fixture / "groundtruth" / f"{name}.nii.gz").is_file()
+        # The reference rasterisation ships as an example, outside groundtruth/.
+        assert entry.reference_mask_path == f"reference_masks/{name}.nii.gz"
+        assert (fixture / entry.reference_mask_path).is_file()
+        assert not (fixture / "groundtruth" / f"{name}.nii.gz").exists()
     assert [t.roi for t in fixture_targets(fixture, manifest, bundles=["pointline"])] == list(
         POINTLINE)
 
@@ -392,18 +394,24 @@ def test_thin_path_predictions_pass(fixture: Path, tmp_path: Path) -> None:
 
 
 @e2e
-def test_reference_rasterisation_as_predictions_passes_cli(fixture: Path) -> None:
+def test_truth_and_reference_masks_as_predictions_pass_cli(fixture: Path, tmp_path: Path) -> None:
+    """The CI smoke: groundtruth/ plus reference_masks/ as one predictions dir, exit 0."""
     from rtmask_conformance.cli import main as cli_main
 
+    pred = tmp_path / "pred"
+    shutil.copytree(fixture / "groundtruth", pred)
+    shutil.copytree(fixture / "reference_masks", pred, dirs_exist_ok=True)
+    assert cli_main(["verify", "--predictions", str(pred), "--fixture", str(fixture)]) == 0
+    # Without the reference masks the curve and point ROIs are MISSING.
     assert cli_main(["verify", "--predictions", str(fixture / "groundtruth"),
-                     "--fixture", str(fixture)]) == 0
+                     "--fixture", str(fixture), "--bundle", "pointline"]) == 1
 
 
 @e2e
 def test_statuses_for_curve_and_point_rois(fixture: Path, tmp_path: Path) -> None:
     pred = tmp_path / "pred"
     pred.mkdir()
-    gt = fixture / "groundtruth"
+    gt = fixture / "reference_masks"
     # A filled helix (FAIL), an empty seed implant (FAIL for a claimed type),
     # a shifted-grid needle (GEOMETRY_MISMATCH), the single point absent (MISSING).
     write_nifti(_filled_per_slice(_truth(HELIX)), GEOMETRY, pred / f"{HELIX}.nii.gz")

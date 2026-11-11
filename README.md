@@ -112,8 +112,9 @@ Shipped in `rtstruct/primitives_pointline.dcm`. These ROIs enclose no volume, so
 graded on curve and point metrics, never Dice, against analytic truth written as JSON
 (`groundtruth_curves/<roi>.json`: the densified curve, its endpoints and its analytic
 arc length; `groundtruth_points/<roi>.json`: the point coordinates). Your tool still writes
-one binary mask per ROI. `groundtruth/<roi>.nii.gz` holds the suite's own thin-path
-rasterisation of each one as an example of a passing mask; it is not what is scored against.
+one binary mask per ROI. `reference_masks/<roi>.nii.gz` holds the suite's own thin-path
+rasterisation of each one as an example of a passing mask; it is not truth and is never
+scored against.
 
 | ROI name | Contour Geometric Type | What it models | Graded on |
 |---|---|---|---|

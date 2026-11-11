@@ -45,12 +45,17 @@ jobs:
       - name: Run tests
         run: pytest -v
 
+      # --fixture form: predictions = the binary-mask truth plus the reference masks
+      # of the curve and point ROIs (reference_masks/ is not truth; those ROIs are
+      # scored against the analytic JSON truth).
       - name: CLI smoke test (generate then verify, --fixture and --groundtruth forms)
         shell: bash
         run: |
           python -m rtmask_conformance.cli generate ./fixture --n-quadrature 2
+          mkdir -p ./smoke_predictions
+          cp ./fixture/groundtruth/*.nii.gz ./fixture/reference_masks/*.nii.gz ./smoke_predictions/
           python -m rtmask_conformance.cli verify \
-              --predictions ./fixture/groundtruth \
+              --predictions ./smoke_predictions \
               --fixture ./fixture
           python -m rtmask_conformance.cli verify \
               --predictions ./fixture/groundtruth \

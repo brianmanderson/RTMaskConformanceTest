@@ -498,9 +498,9 @@ def test_planar_bundle_byte_identical_to_v01(v02_fixture: Path, v01_reference: P
     assert sorted(p.name for p in (v02_fixture / "rtstruct").iterdir()) == sorted(
         f"primitives_{bundle}.dcm" for bundle in BUNDLES
     )
-    # Binary-mask truth, plus the reference rasterisation of every curve and point ROI.
+    # groundtruth/ holds binary-mask truth only.
     assert sorted(p.name for p in (v02_fixture / "groundtruth").iterdir()) == sorted(
-        f"{roi.name}.nii.gz" for rois in BUNDLES.values() for roi in rois
+        f"{roi}.nii.gz" for roi in CONFORMANCE_ROIS
     )
 
 
@@ -605,8 +605,12 @@ def test_manifest_v2_describes_the_fixture(v02_fixture: Path) -> None:
         assert spec["pv_quadrature_per_axis"] == 2
 
 
-def test_verify_fixture_ground_truth_passes(v02_fixture: Path) -> None:
-    report = verify_fixture(v02_fixture / "groundtruth", v02_fixture, load_config())
+def test_verify_fixture_ground_truth_passes(v02_fixture: Path, tmp_path: Path) -> None:
+    pred = tmp_path / "pred"
+    shutil.copytree(v02_fixture / "groundtruth", pred)
+    if (v02_fixture / "reference_masks").is_dir():  # curve and point ROIs
+        shutil.copytree(v02_fixture / "reference_masks", pred, dirs_exist_ok=True)
+    report = verify_fixture(pred, v02_fixture, load_config())
     every_roi = [roi.name for rois in BUNDLES.values() for roi in rois]
     assert report.summary["total"] == len(every_roi)
     assert report.summary["passed"] == len(every_roi), [r.violations for r in report.results]
