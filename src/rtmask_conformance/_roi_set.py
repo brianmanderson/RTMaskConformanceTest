@@ -111,6 +111,44 @@ def _planar_primitives() -> list[AnalyticalPrimitive]:
     ]
 
 
+def _open_planar_rois() -> list[ConformanceROI]:
+    """The two OPEN_PLANAR ROIs of the ``pointline`` bundle, graded on the curve metrics.
+
+    ``line_segment_*`` is the upstream registry entry, same name and geometry;
+    ``open_arc_*`` is suite-native. Each lies on one axial slice (z = 175 and
+    180 mm, both slice positions of the reference CT).
+
+    Not yet listed in :func:`build_bundles`: ``generate`` has no curve
+    ground-truth writer and ``verify`` no curve grader until the pointline
+    bundle lands; that change adds these to it.
+    """
+    from ._vendor.primitives.open_planar import LineSegment2D
+    from .primitives.open_arc import OpenArc2D
+
+    primitives: list[AnalyticalPrimitive] = [
+        LineSegment2D(
+            name="line_segment_x200_y200_to_x300_y280_z175",
+            p1_xy=(200.0, 200.0),
+            p2_xy=(300.0, 280.0),
+            z_mm=175.0,
+            n_samples=32,
+        ),
+        OpenArc2D(
+            name="open_arc_r40_90deg_x380_y300_z180",
+            center_xy=(380.0, 300.0),
+            z_mm=180.0,
+            radius=40.0,
+            start_deg=0.0,
+            sweep_deg=90.0,
+            n_samples=65,
+        ),
+    ]
+    return [
+        ConformanceROI(primitive=p, bundle="pointline", truth_kind="curve", graded=True)
+        for p in primitives
+    ]
+
+
 def build_bundles() -> dict[str, list[ConformanceROI]]:
     """Construct every populated bundle, keyed by bundle name in canonical order.
 

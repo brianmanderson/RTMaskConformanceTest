@@ -50,3 +50,17 @@ primitives:
     dice: 0.92
     hd95_mm: 2.5
     volume_rel_err: 0.05
+
+# Curve and point ROIs (the `pointline` bundle), graded on curve / point
+# metrics, never Dice. One sub-block per ROI name.
+pointline:
+  # OPEN_PLANAR. Each arc_length_error_pct ceiling is twice the error of the
+  # suite's ideal rasteriser (a one-voxel-wide, 8-connected Bresenham trace of
+  # the emitted polyline on its slice, scored by arc_length_metrics), measured
+  # 2026-11-10 by tests/test_open_planar.py: line segment 3.963 % (raster
+  # 133.14 mm vs 128.06 mm analytic), open arc 5.881 % (66.53 vs 62.83 mm).
+  # The arc closed into a filled polygon measures 21.06 % and fails.
+  line_segment_x200_y200_to_x300_y280_z175:
+    arc_length_error_pct: 7.93
+  open_arc_r40_90deg_x380_y300_z180:
+    arc_length_error_pct: 11.76

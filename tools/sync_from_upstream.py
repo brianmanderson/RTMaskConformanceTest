@@ -40,6 +40,8 @@ FILES_TO_VENDOR: list[tuple[str, str]] = [
     ("primitives/base.py", "primitives/base.py"),
     ("primitives/closed_planar.py", "primitives/closed_planar.py"),
     ("primitives/closed_planar_xor.py", "primitives/closed_planar_xor.py"),
+    ("primitives/open_nonplanar.py", "primitives/open_nonplanar.py"),
+    ("primitives/open_planar.py", "primitives/open_planar.py"),
     ("refimage/uid_hierarchy.py", "refimage/uid_hierarchy.py"),
     ("refimage/build_reference_ct.py", "refimage/build_reference_ct.py"),
     ("groundtruth/partial_volume.py", "groundtruth/partial_volume.py"),

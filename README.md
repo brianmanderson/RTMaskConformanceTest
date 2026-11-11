@@ -106,6 +106,20 @@ mm volume to avoid overlap:
 Tools that mishandle multi-contour even-odd fill produce a solid (Dice ≈ 0.6) on the
 two XOR primitives and will fail conformance loudly — that is a feature, not a bug.
 
+### Curve and point ROIs (`pointline` bundle)
+
+Graded on curve and point metrics, never Dice. The two `OPEN_PLANAR` ROIs are defined and
+calibrated; they ship in `rtstruct/primitives_pointline.dcm` once the bundle's curve ground
+truth and grader are in place.
+
+| ROI name | Contour Geometric Type | What it models | Graded on |
+|---|---|---|---|
+| `line_segment_x200_y200_to_x300_y280_z175` | `OPEN_PLANAR` | straight segment (200, 200)→(300, 280) mm on the z = 175 mm slice, 128.06 mm long | arc-length error ≤ 7.93 % |
+| `open_arc_r40_90deg_x380_y300_z180` | `OPEN_PLANAR` | 90° circular arc, r = 40 mm about (380, 300) mm on the z = 180 mm slice, 62.83 mm long | arc-length error ≤ 11.76 % |
+
+Each arc-length ceiling is twice the error of an ideal one-voxel-wide rasterisation at 1 mm.
+A tool that reads an open contour as closed and fills it fails (21 % on the arc).
+
 ### Metrics
 
 Each ROI is scored on:
