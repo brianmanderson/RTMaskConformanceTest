@@ -100,11 +100,32 @@ mm volume to avoid overlap:
 | `cylinder` | z-axis cylinder | r = 30, h = 80 mm | curved + flat caps |
 | `ellipsoid` | ellipsoid | semi-axes (30, 50, 60) mm | anisotropic |
 | `torus` | z-axis torus | R = 60, r = 20 mm | annular cross-sections |
-| `hollow_sphere` | hollow sphere | R = 40, r = 20 mm | XOR (multi-contour) |
-| `straw` | hollow cylinder | R = 40, r = 20, h = 120 mm | XOR (multi-contour) |
+| `hollow_sphere` | hollow sphere | R = 40, r = 20 mm | multi-contour even-odd (vendor convention) |
+| `straw` | hollow cylinder | R = 40, r = 20, h = 120 mm | multi-contour even-odd (vendor convention) |
 
 Tools that mishandle multi-contour even-odd fill produce a solid (Dice ≈ 0.6) on the
-two XOR primitives and will fail conformance loudly — that is a feature, not a bug.
+two hollow primitives and will fail conformance loudly — that is a feature, not a bug.
+
+### Hole encodings (v0.2)
+
+The hollow sphere and the straw also ship in the two hole encodings DICOM PS3.3
+C.8.8.6.3 defines, each in its own RTSTRUCT so a reader that rejects one encoding
+still reads the others. Same centres, radii and height as above, so the ground truth
+of each twin is byte-identical to its original's, and so are its thresholds.
+
+| Bundle (RTSTRUCT) | ROIs | Encoding of the cavity |
+|---|---|---|
+| `planar` (`primitives_planar.dcm`) | `hollow_sphere`, `straw` | two coplanar `CLOSED_PLANAR` contours per slice, read even-odd by convention (not defined by the standard) |
+| `xor` (`primitives_xor.dcm`) | `hollow_sphere_xor`, `straw_xor` | the standard's `CLOSEDPLANAR_XOR` encoding: the same two contours, every one typed `CLOSEDPLANAR_XOR` |
+| `keyhole` (`primitives_keyhole.dcm`) | `hollow_sphere_keyhole`, `straw_keyhole` | the standard's single-contour keyhole encoding: one `CLOSED_PLANAR` contour per slice, joined to the cavity by a zero-width channel |
+
+The keyhole contour starts at the outer ring's +x vertex, runs once round the outer ring
+(increasing angle) and back to its start, crosses the channel to the inner ring's +x
+vertex, runs once round the inner ring the opposite way and back to its start; the
+contour's closing edge is the channel back. The opposite winding leaves the cavity
+empty under both the even-odd and the non-zero fill rule. A tool whose threshold YAML
+does not claim `CLOSEDPLANAR_XOR` and writes nothing for the `xor` bundle gets
+`UNSUPPORTED_TYPE` there, which does not fail the run.
 
 ### Metrics
 

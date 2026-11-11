@@ -10,7 +10,12 @@ definitions); they do not depend on any third-party converter.
 | Path | What it is |
 |---|---|
 | `refct/` | 200 DICOM CT slices (1 mm isotropic, 512×512×200 mm). Use as the reference image series. |
-| `rtstruct/primitives_planar.dcm` | RTSTRUCT containing the seven ROIs, all `CLOSED_PLANAR` (multi-contour XOR for the two hollow shapes). |
+| `rtstruct/primitives_planar.dcm` | RTSTRUCT containing the seven v0.1 ROIs, all `CLOSED_PLANAR`. The two hollow shapes use two coplanar contours per slice, read even-odd by convention (a vendor convention, not defined by the standard). |
+| `rtstruct/primitives_xor.dcm` | `hollow_sphere_xor`, `straw_xor`: the same two hollow shapes in the standard's `CLOSEDPLANAR_XOR` encoding (every contour typed `CLOSEDPLANAR_XOR`). |
+| `rtstruct/primitives_keyhole.dcm` | `hollow_sphere_keyhole`, `straw_keyhole`: the same two hollow shapes in the standard's single-contour keyhole encoding (one `CLOSED_PLANAR` contour per slice, a zero-width channel to the cavity). |
+
+`manifest.json` lists every RTSTRUCT and the ROIs it holds. Convert each RTSTRUCT
+against the same `refct/` series.
 
 ## Required outputs from your tool
 
@@ -25,7 +30,7 @@ spacing, size, direction). The verifier rejects predictions whose geometry
 differs by more than 1e-4 mm before scoring — most tool bugs are geometry
 mismatches, and surfacing them separately is more diagnostic than a low Dice.
 
-The seven ROI filenames are:
+The ROI filenames are:
 
 - `sphere.nii.gz`
 - `cube.nii.gz`
@@ -34,6 +39,8 @@ The seven ROI filenames are:
 - `torus.nii.gz`
 - `hollow_sphere.nii.gz`
 - `straw.nii.gz`
+- `hollow_sphere_xor.nii.gz`, `straw_xor.nii.gz`
+- `hollow_sphere_keyhole.nii.gz`, `straw_keyhole.nii.gz`
 
 The ROI names match the `ROIName` field of each ROI in the RTSTRUCT, so a tool
 that converts RTSTRUCT to per-ROI NIfTI in the obvious way (using `ROIName`
@@ -56,9 +63,14 @@ default thresholds.
 
 ## Notes
 
-- The two hollow shapes (`hollow_sphere_*` and `straw_*`) test multi-contour
-  even-odd fill. Tools that fill the inner contour as solid (a common bug)
-  will produce a Dice around 0.6 on those ROIs and fail conformance.
+- The hollow sphere and the straw test hole handling, in three encodings: the
+  planar bundle's multi-contour even-odd convention, the standard's
+  `CLOSEDPLANAR_XOR` (`*_xor`) and the standard's keyhole contour (`*_keyhole`).
+  All three have the same ground truth. Tools that fill the cavity as solid (a
+  common bug) will produce a Dice around 0.6 on those ROIs and fail conformance.
+- A tool that does not support `CLOSEDPLANAR_XOR` should leave it out of
+  `claims: geometric_types:` in its threshold YAML and write nothing for the
+  `xor` ROIs; they are then reported `UNSUPPORTED_TYPE`, which does not fail the run.
 - All ROIs sit ≥ 40 mm clear of the volume edges, so boundary-clipping
   shouldn't be a factor.
 - Ground-truth masks are binarized at the 0.5 partial-volume level (8³

@@ -15,17 +15,26 @@ the generator, the manifest and the verifier need:
 * ``graded`` — whether ``verify`` scores it against thresholds. Ungraded ROIs
   are shipped (and recorded in the manifest) but never affect the verdict.
 
-The bundle names in :data:`BUNDLE_NAMES` are reserved. Only ``planar`` is
-populated: it holds the seven closed-planar primitives of v0.1, unchanged.
+The bundle names in :data:`BUNDLE_NAMES` are reserved. ``planar`` holds the
+seven closed-planar primitives of v0.1, unchanged; ``xor`` and ``keyhole`` hold
+the hollow sphere and the straw again, in the standard's two hole encodings
+(:mod:`rtmask_conformance.primitives.hole_encodings`), with the same geometry
+and therefore the same ground truth.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from ._vendor.primitives.base import AnalyticalPrimitive, GeometricType
 from ._vendor.primitives.closed_planar import Cube, Cylinder, Ellipsoid, Sphere, Torus
 from ._vendor.primitives.closed_planar_xor import HollowCylinder, HollowSphere
+from .primitives.hole_encodings import (
+    HollowCylinderKeyhole,
+    HollowCylinderXor,
+    HollowSphereKeyhole,
+    HollowSphereXor,
+)
 
 #: Reserved bundle names, in canonical order.
 BUNDLE_NAMES: tuple[str, ...] = ("planar", "xor", "keyhole", "pointline", "negative")
@@ -111,6 +120,25 @@ def _planar_primitives() -> list[AnalyticalPrimitive]:
     ]
 
 
+def _hole_encoding_twins(encoding: str) -> list[AnalyticalPrimitive]:
+    """``hollow_sphere`` and ``straw`` re-encoded, named ``<name>_<encoding>``.
+
+    Built from the planar primitives' own parameters, so the twins cannot drift
+    from them: same centre, radii and height, same inside test, same ground truth.
+    """
+    classes = {
+        "xor": {HollowSphere: HollowSphereXor, HollowCylinder: HollowCylinderXor},
+        "keyhole": {HollowSphere: HollowSphereKeyhole, HollowCylinder: HollowCylinderKeyhole},
+    }[encoding]
+    twins: list[AnalyticalPrimitive] = []
+    for p in _planar_primitives():
+        if type(p) in classes:
+            params = {f.name: getattr(p, f.name) for f in fields(p) if f.init}
+            params["name"] = f"{p.name}_{encoding}"
+            twins.append(classes[type(p)](**params))
+    return twins
+
+
 def build_bundles() -> dict[str, list[ConformanceROI]]:
     """Construct every populated bundle, keyed by bundle name in canonical order.
 
@@ -122,6 +150,13 @@ def build_bundles() -> dict[str, list[ConformanceROI]]:
             ConformanceROI(primitive=p, bundle="planar", truth_kind="binary_mask", graded=True)
             for p in _planar_primitives()
         ],
+        **{
+            enc: [
+                ConformanceROI(primitive=p, bundle=enc, truth_kind="binary_mask", graded=True)
+                for p in _hole_encoding_twins(enc)
+            ]
+            for enc in ("xor", "keyhole")
+        },
     }
     names = [roi.name for rois in bundles.values() for roi in rois]
     duplicates = sorted({n for n in names if names.count(n) > 1})
