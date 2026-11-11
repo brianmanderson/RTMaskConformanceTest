@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from rtmask_conformance import CONFORMANCE_ROIS, __version__, load_config
+from rtmask_conformance import BUNDLES, __version__, load_config
 from rtmask_conformance.cli import main as cli_main
 from rtmask_conformance.manifest import (
     MANIFEST_VERSION,
@@ -431,7 +431,7 @@ def test_v01_primitives_status_list_unchanged(tmp_path: Path) -> None:
     gt = fx / "groundtruth"
     pred = tmp_path / "pred"
     pred.mkdir()
-    rois = list(CONFORMANCE_ROIS)
+    rois = [roi.name for roi in BUNDLES["planar"]]
     for roi in rois[4:]:
         shutil.copyfile(gt / f"{roi}.nii.gz", pred / f"{roi}.nii.gz")
     img = sitk.ReadImage(str(gt / f"{rois[0]}.nii.gz"))
@@ -448,8 +448,8 @@ def test_v01_primitives_status_list_unchanged(tmp_path: Path) -> None:
     img.SetOrigin(origin)
     sitk.WriteImage(img, str(pred / f"{rois[2]}.nii.gz"), True)
 
-    for report in (verify_fixture(pred, fx, load_config()),
-                   verify_predictions(pred, gt, load_config())):
+    for report in (verify_fixture(pred, fx, load_config(), bundles=["planar"]),
+                   verify_predictions(pred, gt, load_config(), rois=rois)):
         assert [(r.roi, r.status.value) for r in report.results] == V01_NEGATIVE_STATUSES
         assert report.summary["unsupported_type"] == report.summary["report_only"] == 0
         assert not report.overall_pass

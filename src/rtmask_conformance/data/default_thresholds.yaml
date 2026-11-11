@@ -21,10 +21,10 @@ defaults:
 # Per-primitive overrides. Keys shallow-merge over `defaults`.
 # Rationale: cube is axis-aligned (near-exact); smooth convex shapes
 # achievable at ~0.97-0.98 by any correct rasterizer; torus has high
-# surface-to-volume ratio so boundary voxels dominate; the two XOR
-# primitives (hollow sphere, straw) require correct multi-contour even-odd
-# fill — tools that mishandle that produce a solid (Dice ~0.6) and
-# should fail loudly, but not because the threshold was too tight.
+# surface-to-volume ratio so boundary voxels dominate; the two hollow
+# primitives (hollow sphere, straw) require their cavity to be left empty —
+# tools that fill it produce a solid (Dice ~0.6) and should fail loudly,
+# but not because the threshold was too tight.
 primitives:
   sphere:
     dice: 0.98
@@ -47,6 +47,25 @@ primitives:
     hd95_mm: 2.5
     volume_rel_err: 0.05
   straw:
+    dice: 0.92
+    hd95_mm: 2.5
+    volume_rel_err: 0.05
+  # The hollow sphere and the straw in the standard's two hole encodings
+  # (bundles `xor` and `keyhole`): same geometry and ground truth as above,
+  # so the same floors, copied verbatim.
+  hollow_sphere_xor:
+    dice: 0.92
+    hd95_mm: 2.5
+    volume_rel_err: 0.05
+  straw_xor:
+    dice: 0.92
+    hd95_mm: 2.5
+    volume_rel_err: 0.05
+  hollow_sphere_keyhole:
+    dice: 0.92
+    hd95_mm: 2.5
+    volume_rel_err: 0.05
+  straw_keyhole:
     dice: 0.92
     hd95_mm: 2.5
     volume_rel_err: 0.05
