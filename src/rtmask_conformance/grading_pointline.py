@@ -104,6 +104,24 @@ _OPEN_CURVE_TYPES = ("OPEN_PLANAR", "OPEN_NONPLANAR")
 # -----------------------------------------------------------------
 
 
+#: Significant digits of every coordinate and length in a truth JSON. Sine and
+#: cosine (helix, needle track, sinusoid) can differ in the last bit between
+#: platforms; 12 digits absorbs that, so the files hash the same on every OS,
+#: while moving a value by at most half a unit in the 12th digit (~1e-10 mm at
+#: 500 mm). The RTSTRUCT writer upstream uses the same precision for ContourData.
+TRUTH_SIGNIFICANT_DIGITS: int = 12
+
+
+def _sig(values: np.ndarray | float) -> Any:
+    """``values`` rounded to :data:`TRUTH_SIGNIFICANT_DIGITS`, as nested lists / a float."""
+    fmt = f".{TRUTH_SIGNIFICANT_DIGITS}g"
+    if np.isscalar(values):
+        return float(format(float(values), fmt))
+    return np.vectorize(lambda v: float(format(float(v), fmt)), otypes=[np.float64])(
+        np.asarray(values, dtype=np.float64)
+    ).tolist()
+
+
 def _geometry_dict(geometry: Geometry) -> dict[str, list]:
     return {
         "origin": [float(v) for v in geometry.origin],
@@ -133,7 +151,8 @@ def build_truth(
     ``primitive.get_contours`` densified with :func:`densify_polyline` (one
     polyline per contour), the first and last vertex of each open contour, and
     the analytic arc length from the spec dict (summed over the contours by
-    the primitive itself).
+    the primitive itself). Coordinates and the arc length are rounded to
+    :data:`TRUTH_SIGNIFICANT_DIGITS`.
     """
     record: dict[str, Any] = {
         "roi": primitive.name,
@@ -144,7 +163,7 @@ def build_truth(
     if truth_kind == "points":
         points = np.asarray(primitive.points, dtype=np.float64)  # type: ignore[attr-defined]
         record["n_points"] = int(points.shape[0])
-        record["points_mm"] = points.tolist()
+        record["points_mm"] = _sig(points)
         return record
     if truth_kind != "curve":
         raise ValueError(f"{primitive.name}: not a curve or point truth kind: {truth_kind!r}")
@@ -156,18 +175,18 @@ def build_truth(
         chunks.append(densify_polyline(c.points_xyz, max_step_mm=DENSIFY_MAX_STEP_MM))
         gt = c.geometric_type.value if hasattr(c.geometric_type, "value") else str(c.geometric_type)
         if gt in _OPEN_CURVE_TYPES:
-            endpoints.append(np.asarray(c.points_xyz[0], dtype=np.float64).tolist())
-            endpoints.append(np.asarray(c.points_xyz[-1], dtype=np.float64).tolist())
+            endpoints.append(_sig(c.points_xyz[0]))
+            endpoints.append(_sig(c.points_xyz[-1]))
     spec = primitive.to_spec_dict()
     source = next((k for k in ARC_LENGTH_SPEC_KEYS if spec.get(k) is not None), None)
     if source is None:
         raise ValueError(f"{primitive.name}: spec carries no analytic arc length")
     record["n_curves"] = len(contours)
     record["densify_max_step_mm"] = DENSIFY_MAX_STEP_MM
-    record["analytical_arc_length_mm"] = float(spec[source])
+    record["analytical_arc_length_mm"] = _sig(float(spec[source]))
     record["arc_length_source"] = source
     record["endpoints_mm"] = endpoints or None
-    record["polylines_mm"] = [chunk.tolist() for chunk in chunks]
+    record["polylines_mm"] = [_sig(chunk) for chunk in chunks]
     return record
 
 

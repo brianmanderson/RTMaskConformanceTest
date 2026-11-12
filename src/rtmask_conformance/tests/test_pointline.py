@@ -117,7 +117,8 @@ def test_point_truth_matches_the_primitive() -> None:
     for name, n in counts.items():
         truth = _truth(name)
         assert truth["n_points"] == n == len(truth["points_mm"])
-        np.testing.assert_array_equal(truth["points_mm"], POINTLINE[name].primitive.points)
+        np.testing.assert_allclose(
+            truth["points_mm"], POINTLINE[name].primitive.points, rtol=1e-11, atol=0)
     assert _truth("single_point_x256_y256_z150")["points_mm"] == [[256.0, 256.0, 150.0]]
     track = np.asarray(_truth("needle_track_10pts_x150_y150")["points_mm"])
     np.testing.assert_allclose(track[0], (140.0, 140.0, 130.0))
@@ -133,7 +134,7 @@ def test_curve_truth_arc_lengths_and_sampling() -> None:
     for name in CURVE_ROIS:
         truth = _truth(name)
         if name in expected_length:
-            assert truth["analytical_arc_length_mm"] == pytest.approx(expected_length[name], 1e-12)
+            assert truth["analytical_arc_length_mm"] == pytest.approx(expected_length[name], rel=1e-11)
         n_curves = 5 if name.startswith("syed") else 1
         assert truth["n_curves"] == len(truth["polylines_mm"]) == n_curves
         assert len(truth["endpoints_mm"]) == 2 * n_curves
@@ -144,6 +145,34 @@ def test_curve_truth_arc_lengths_and_sampling() -> None:
     sin = _truth("sinusoid_x150_y350_z20to80")
     assert sin["arc_length_source"] == "continuous_arc_length_mm"
     assert sin["analytical_arc_length_mm"] == pytest.approx(110.5495, abs=1e-3)
+
+
+def _floats(obj):
+    if isinstance(obj, float):
+        yield obj
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _floats(v)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _floats(v)
+
+
+@pytest.mark.parametrize("name", list(POINTLINE))
+def test_truth_floats_have_twelve_significant_digits(name: str) -> None:
+    """Truth JSON hashes the same on every platform: last-bit sin/cos differences
+    are rounded away, and the rounded values are still within 1e-11 of the primitive."""
+    truth = _truth(name)
+    values = list(_floats({k: truth[k] for k in truth if k != "geometry"}))
+    assert values
+    assert all(v == float(f"{v:.12g}") for v in values)
+    if truth["truth_kind"] == "curve":
+        roi = POINTLINE[name]
+        raw = np.concatenate([
+            gp.densify_polyline(c.points_xyz, max_step_mm=gp.DENSIFY_MAX_STEP_MM)
+            for c in roi.primitive.get_contours(GEOMETRY)
+        ])
+        np.testing.assert_allclose(gp.curve_samples(truth), raw, rtol=1e-11, atol=1e-9)
 
 
 def test_truth_json_round_trips(tmp_path: Path) -> None:
