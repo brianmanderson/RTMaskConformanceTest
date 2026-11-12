@@ -139,9 +139,9 @@ scored against.
 
 | ROI name | Contour Geometric Type | What it models | Graded on |
 |---|---|---|---|
-| `single_point_x256_y256_z150` | `POINT` | one fiducial marker on a voxel centre | point recall = 1; max point displacement ≤ 1.0 mm |
-| `needle_track_10pts_x150_y150` | `POINT` | 10 seeds about 5 mm apart along a gently curved, oblique needle track | point recall = 1; max point displacement ≤ 1.0 mm |
-| `ldr_seed_implant_x350_y350` | `POINT` | 147 seeds in 7 axial planes 5 mm apart, packed inside an elliptical cross-section (a seed-implant pattern) | point recall = 1; max point displacement ≤ 1.0 mm |
+| `single_point_x256_y256_z150` | `POINT` | one fiducial marker on a voxel centre | point recall = 1; max point displacement ≤ 1.0 mm; false-positive rate ≤ 0.3 |
+| `needle_track_10pts_x150_y150` | `POINT` | 10 seeds about 5 mm apart along a gently curved, oblique needle track | point recall = 1; max point displacement ≤ 1.0 mm; false-positive rate ≤ 0.3 |
+| `ldr_seed_implant_x350_y350` | `POINT` | 147 seeds in 7 axial planes 5 mm apart, packed inside an elliptical cross-section (a seed-implant pattern) | point recall = 1; max point displacement ≤ 1.0 mm; false-positive rate ≤ 0.3 |
 | `diagonal_needle_x100_y200_z40` | `OPEN_NONPLANAR` | straight needle (80, 180, 30)→(160, 240, 70) mm, oblique to all three axes, 107.7 mm long | arc-length error ≤ 16 %; max curve distance ≤ 1.5 mm; mean voxel-to-curve distance ≤ 0.95 mm |
 | `helix_r12_pitch6_4turns_x300_y200` | `OPEN_NONPLANAR` | four-turn helix, r = 12 mm, pitch 6 mm, 302.5 mm long | as above |
 | `sinusoid_x150_y350_z20to80` | `OPEN_NONPLANAR` | path oscillating in x (±8 mm) and y (±4 mm) as z runs 20→80 mm, 110.5 mm long | as above |
@@ -151,7 +151,8 @@ scored against.
 
 Point metrics: **recall** (fraction of points with a marked voxel within one voxel
 diagonal), **mean / max displacement** (point to nearest marked voxel) and **false-positive
-rate** (marked voxels farther than a voxel diagonal from every point; reported, not graded).
+rate** (marked voxels farther than a voxel diagonal from every point; it catches a point set
+filled into a solid region, which recall and displacement cannot see).
 Curve metrics: **coverage recall** and **mean / max curve distance** (analytic curve to nearest
 marked voxel), **mean voxel-to-curve distance** (marked voxel to nearest point of the curve),
 and **arc-length error** (length of the mask's skeleton against the analytic arc length).

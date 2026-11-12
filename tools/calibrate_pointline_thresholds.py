@@ -30,6 +30,11 @@ Calibration rule:
 4. Recall floors are the lowest value a positive calibrator reaches, with no
    margin: recall counts discrete points or curve samples, and one missed
    point is a defect.
+5. ``point_fp_rate`` is a fixed policy ceiling (:data:`POINT_FP_RATE_CEILING`),
+   not derived from the CSV: every tool there may score 0, which leaves no
+   scale. It is set from the suite's own masks (a 3x3x3 seed glyph scores
+   0.23 and passes; point sets filled into solid regions score 0.57-0.98
+   and fail).
 
 The script prints the proposed YAML block, then a per-tool, per-primitive
 pass/fail table under it and the separation between the two groups. Exit
@@ -49,6 +54,7 @@ VOXEL_DIAGONAL_MM = math.sqrt(3.0)  # the fixture grid is 1 mm isotropic
 
 POINT_FLOORS = ("point_recall",)
 POINT_CEILINGS = ("point_max_displacement_mm",)
+POINT_FP_RATE_CEILING = 0.3
 CURVE_CEILINGS = (
     "arc_length_error_pct",
     "curve_max_distance_mm",
@@ -123,6 +129,11 @@ def propose(rows: list[dict], margin: float) -> tuple[dict, dict]:
             worst = max(vals)
             limits[m] = _ceil_to(worst * margin, STEP.get(m, DEFAULT_STEP))
             notes[m] = {"calibrator_max": worst, "margin": margin, "ceiling": limits[m]}
+        if gtype == "POINT":
+            vals = [_num(r["point_fp_rate"]) for r in pos_rows if _num(r["point_fp_rate"]) is not None]
+            limits["point_fp_rate"] = POINT_FP_RATE_CEILING
+            notes["point_fp_rate"] = {"calibrator_max": max(vals) if vals else None,
+                                      "ceiling": POINT_FP_RATE_CEILING, "source": "policy"}
         notes[gtype] = {"positive": positive, "negative": negative}
         for prim in dict.fromkeys(r["primitive"] for r in fam):
             block[prim] = dict(limits)

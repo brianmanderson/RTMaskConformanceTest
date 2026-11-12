@@ -200,7 +200,7 @@ def test_shipped_block_covers_every_pointline_roi() -> None:
         assert shipped[name] == block
     for name in POINT_ROIS:
         assert gp.thresholds_for("default", name, "points")["point_recall"] == 1.0
-        assert "point_fp_rate" not in gp.thresholds_for("default", name, "points")
+        assert gp.thresholds_for("default", name, "points")["point_fp_rate"] == 0.3
     for name in CURVE_ROIS:
         assert "arc_length_error_pct" in gp.thresholds_for("default", name, "curve")
     # The pointline block never reaches the planar resolver.
@@ -287,16 +287,54 @@ def test_missing_seed_fails_recall() -> None:
     assert any(p.startswith("point_recall") for p in problems), problems
 
 
-def test_dilated_seeds_pass_and_show_in_fp_rate() -> None:
-    """point_fp_rate is reported, not graded: a seed drawn as a 5x5x5 block still
-    passes; its fp rate shows the extra marking."""
-    from scipy.ndimage import binary_dilation
+def _filled_point_set(name: str) -> np.ndarray:
+    """The point set filled into a solid region: the seed implant's convex hull
+    filled on each of its planes; any other set joined as one polygon, filled on
+    every slice it spans. Recall and displacement still pass on such a mask."""
+    from scipy.spatial import ConvexHull
+    from skimage.draw import polygon
+
+    pts = np.asarray(_truth(name)["points_mm"])
+    mask = gp.reference_rasterisation(_truth(name))
+    if name == SEEDS:
+        for z in np.unique(pts[:, 2]):
+            plane = pts[pts[:, 2] == z][:, :2]
+            hull = plane[ConvexHull(plane).vertices]
+            rr, cc = polygon(hull[:, 1], hull[:, 0], mask.shape[1:])
+            mask[int(round(z)), rr, cc] = 1
+    else:
+        idx = np.rint(GEOMETRY.physical_to_index(pts)).astype(int)
+        rr, cc = polygon(idx[:, 1], idx[:, 0], mask.shape[1:])
+        mask[idx[:, 2].min(): idx[:, 2].max() + 1, rr, cc] = 1
+    return mask
+
+
+@pytest.mark.parametrize(
+    ("name", "fp_at_least"), [(SEEDS, 0.5), ("needle_track_10pts_x150_y150", 0.9)]
+)
+def test_filled_point_set_fails_on_fp_rate(name: str, fp_at_least: float) -> None:
+    truth = _truth(name)
+    mask = _filled_point_set(name)
+    metrics = gp.compute_metrics(mask, truth, GEOMETRY)
+    assert metrics["point_recall"] == 1.0  # the outward-looking metrics are blind to it
+    assert metrics["point_fp_rate"] >= fp_at_least
+    assert [p.split()[0] for p in _grade(mask, name)] == ["point_fp_rate"]
+
+
+def test_seed_glyphs_pass_within_fp_rate() -> None:
+    """Each seed drawn as a 3x3x3 glyph (fp 0.23) passes; a 5x5x5 block (fp 0.80) fails."""
+    from scipy.ndimage import binary_dilation, generate_binary_structure
 
     truth = _truth(SEEDS)
-    mask = binary_dilation(gp.reference_rasterisation(truth), iterations=2).astype(np.uint8)
-    metrics = gp.compute_metrics(mask, truth, GEOMETRY)
-    assert metrics["point_fp_rate"] > 0.0
-    assert _grade(mask, SEEDS) == []
+    full = generate_binary_structure(3, 3)
+    ref = gp.reference_rasterisation(truth)
+    glyph = binary_dilation(ref, full).astype(np.uint8)
+    assert gp.compute_metrics(glyph, truth, GEOMETRY)["point_fp_rate"] == pytest.approx(
+        0.23, abs=0.01)
+    assert _grade(glyph, SEEDS) == []
+    block = binary_dilation(ref, full, iterations=2).astype(np.uint8)
+    assert [p.split()[0] for p in _grade(block, SEEDS)] == ["point_fp_rate"]
+    assert gp.compute_metrics(ref, truth, GEOMETRY)["point_fp_rate"] == 0.0
 
 
 def test_skeleton_crop_does_not_change_arc_length() -> None:

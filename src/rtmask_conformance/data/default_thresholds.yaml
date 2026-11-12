@@ -93,7 +93,13 @@ primitives:
 #   mask for the point ROIs; they agree exactly. Every seed must be found
 #   (point_recall floor 1.0, no margin: one missed seed is a defect).
 #     point_max_displacement_mm     worst 0.636  -> 1.0
-#   point_fp_rate is reported, not graded.
+#   point_fp_rate (fraction of marked voxels farther than one voxel diagonal from
+#   every point) ceiling 0.3, set 2026-11-12, not from the anchor, where every
+#   tool scores 0.0. Recall and displacement only look outward from the points,
+#   so a mask that fills the point set into a solid region passes them; the fp
+#   rate catches it. Measured on the suite's own masks: exact voxels 0.00, each
+#   seed drawn as a 3x3x3 glyph 0.23 (passes), the seed implant filled per plane
+#   0.57 and the needle track filled as a polygon 0.98 (both fail).
 # One ceiling per family, written into every sub-block: several primitives score
 # exactly 0 for every positive calibrator (an axis-aligned needle, a point on a
 # voxel centre), so a per-primitive multiple would leave no tolerance. The
@@ -104,12 +110,15 @@ pointline:
   single_point_x256_y256_z150:
     point_recall: 1.0
     point_max_displacement_mm: 1.0
+    point_fp_rate: 0.3
   needle_track_10pts_x150_y150:
     point_recall: 1.0
     point_max_displacement_mm: 1.0
+    point_fp_rate: 0.3
   ldr_seed_implant_x350_y350:
     point_recall: 1.0
     point_max_displacement_mm: 1.0
+    point_fp_rate: 0.3
   diagonal_needle_x100_y200_z40:
     arc_length_error_pct: 16.0
     curve_max_distance_mm: 1.5
