@@ -22,8 +22,9 @@ diagnostic.
 
 Each ROI resolves to one :class:`Status`, in this order:
 
-1. prediction absent and the ROI's geometric type not claimed by the config
-   -> ``UNSUPPORTED_TYPE`` (not a failure);
+1. no output (prediction absent, or an all-zero mask on the reference grid)
+   and the ROI's geometric type not claimed by the config -> ``UNSUPPORTED_TYPE``
+   (not a failure). For a claimed type an all-zero mask is scored and fails;
 2. the ROI is report-only (named in ``report_only`` by ROI or geometric type,
    or ``graded: false`` in the manifest) -> ``REPORT_ONLY``: scored when it can
    be, never a failure;
@@ -37,10 +38,8 @@ The ROI's ``truth_kind`` picks the grader. ``binary_mask`` ROIs are scored on
 Dice, surface metrics and volume against a NIfTI. ``curve`` and ``points`` ROIs
 are scored on curve, arc-length and point metrics against the analytic truth
 JSON (:mod:`rtmask_conformance.grading_pointline`), with thresholds from the
-YAML's ``pointline:`` block. Two rules differ there: an all-zero prediction
-counts as no output, so it is ``UNSUPPORTED_TYPE`` for an unclaimed type and
-``FAIL`` for a claimed one; and the geometry check is against the grid recorded
-in the truth JSON.
+YAML's ``pointline:`` block, and their geometry check is against the grid
+recorded in the truth JSON.
 """
 
 from __future__ import annotations
@@ -322,6 +321,14 @@ def evaluate_one(
         )
 
     record = _grade(roi, prediction_path, groundtruth_path, thresholds, common)
+    if not config.claims(geometric_type) and record.metrics.get("tool_volume_mm3") == 0:
+        # An all-zero mask is no output: the tool wrote a placeholder for a type it declines.
+        return ResultRecord(
+            status=Status.UNSUPPORTED_TYPE,
+            violations=[f"empty prediction; geometric type {geometric_type} is not claimed"],
+            prediction_path=str(prediction_path),
+            **common,
+        )
     if not graded or config.is_report_only(roi, geometric_type):
         return as_report_only(record)
     return record

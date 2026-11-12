@@ -158,6 +158,43 @@ def test_claimed_missing_type_is_missing_and_fails(fixture: Path, tmp_path: Path
     assert cli_main(["verify", "--predictions", str(pred), "--fixture", str(fixture)]) == 1
 
 
+def _empty_prediction(fixture: Path, pred: Path, roi: str) -> None:
+    """An all-zero mask on the reference grid: a placeholder a tool writes for a ROI it skipped."""
+    _write(np.zeros(SHAPE, dtype=np.uint8), pred / f"{roi}.nii.gz")
+
+
+def test_unclaimed_empty_mask_is_unsupported(fixture: Path, tmp_path: Path) -> None:
+    """An empty mask for an unclaimed type is no output: UNSUPPORTED_TYPE, not FAIL."""
+    pred = _predictions(fixture, tmp_path, ["box", "probe"])
+    _empty_prediction(fixture, pred, "ring_xor")
+    report = verify_fixture(pred, fixture, load_config(_yaml(tmp_path, NO_XOR)))
+
+    record = {r.roi: r for r in report.results}["ring_xor"]
+    assert record.status == Status.UNSUPPORTED_TYPE
+    assert record.violations == ["empty prediction; geometric type CLOSEDPLANAR_XOR is not claimed"]
+    assert record.prediction_path is not None
+    assert report.overall_pass
+
+
+def test_claimed_empty_mask_fails(fixture: Path, tmp_path: Path) -> None:
+    """An empty mask for a claimed type is scored and fails (planar: Dice 0)."""
+    pred = _predictions(fixture, tmp_path, ["box", "probe"])
+    _empty_prediction(fixture, pred, "ring_xor")
+    report = verify_fixture(pred, fixture, load_config())  # default claims all five
+
+    record = {r.roi: r for r in report.results}["ring_xor"]
+    assert record.status == Status.FAIL
+    assert record.metrics["dice"] == 0.0
+    assert not report.overall_pass
+
+
+def test_unclaimed_nonempty_mask_is_still_graded(fixture: Path, tmp_path: Path) -> None:
+    """Declining a type does not excuse a mask the tool did write: it is scored as usual."""
+    pred = _predictions(fixture, tmp_path, ["box", "probe", "ring_xor"])
+    report = verify_fixture(pred, fixture, load_config(_yaml(tmp_path, NO_XOR)))
+    assert _statuses(report)["ring_xor"] == "PASS"
+
+
 def test_unclaimed_type_with_a_prediction_is_graded(fixture: Path, tmp_path: Path) -> None:
     pred = _predictions(fixture, tmp_path, ["box"])
     _write(_block(4, 20), pred / "ring_xor.nii.gz")  # inner hole filled: the solid-fill bug

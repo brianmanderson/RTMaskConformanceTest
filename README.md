@@ -224,7 +224,7 @@ Exit codes: `0` no ROI failed, `1` any ROI is `FAIL`, `MISSING` or `GEOMETRY_MIS
 | `FAIL` | At least one metric missed its threshold (listed under Details). | yes |
 | `MISSING` | No `<roi>.nii.gz` in the predictions, and the ROI's geometric type is claimed. | yes |
 | `GEOMETRY_MISMATCH` | The prediction's origin, spacing, size or direction differs from the ground truth by more than 1e-4 mm, so it was not scored. | yes |
-| `UNSUPPORTED_TYPE` | No prediction, and the ROI's geometric type is not in your `claims:`; the tool declined a type it does not support. | no |
+| `UNSUPPORTED_TYPE` | No output, or an empty mask, for a type the tool does not claim (not in your `claims:`); the tool declined a type it does not support. For a claimed type an empty mask is scored and fails. | no |
 | `REPORT_ONLY` | The ROI is in `report_only:` (or the fixture marks it ungraded): scored and reported when possible, never graded. | no |
 
 See the file `README_FOR_TOOL_AUTHOR.md` written into the fixture directory for the
@@ -254,7 +254,8 @@ primitives:
 Per-primitive overrides shallow-merge over `defaults` and may name any ROI. `claims:`
 lists the Contour Geometric Type values your tool supports (`CLOSED_PLANAR`,
 `CLOSEDPLANAR_XOR`, `OPEN_PLANAR`, `OPEN_NONPLANAR`, `POINT`); a ROI of an unclaimed type
-for which your tool writes nothing is `UNSUPPORTED_TYPE` rather than `MISSING`, and the
+for which your tool writes nothing, or an empty mask, is `UNSUPPORTED_TYPE` rather than
+`MISSING` or `FAIL`, and the
 default claims all five. `report_only:` lists ROI names or geometric types to score and
 report without grading; your list adds to the shipped one, while your `claims:` replace
 the shipped claims. Every verify report records the claims and the `report_only` list it
