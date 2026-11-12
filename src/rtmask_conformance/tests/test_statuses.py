@@ -448,7 +448,7 @@ def test_v01_primitives_status_list_unchanged(tmp_path: Path) -> None:
     img.SetOrigin(origin)
     sitk.WriteImage(img, str(pred / f"{rois[2]}.nii.gz"), True)
 
-    for report in (verify_fixture(pred, fx, load_config()),
+    for report in (verify_fixture(pred, fx, load_config(), bundles=["planar"]),
                    verify_predictions(pred, gt, load_config())):
         assert [(r.roi, r.status.value) for r in report.results] == V01_NEGATIVE_STATUSES
         assert report.summary["unsupported_type"] == report.summary["report_only"] == 0

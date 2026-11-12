@@ -83,7 +83,7 @@ def test_manifest_v2_json_layout(tmp_path: Path) -> None:
     assert set(raw["bundles"]["planar"]) == {"rtstruct_path", "rtstruct_sha256", "rois"}
     assert set(raw["rois"]["sphere"]) == {
         "bundle", "geometric_type", "truth_kind", "graded", "truth_path", "truth_sha256",
-        "spec_path", "expected_prediction",
+        "spec_path", "expected_prediction", "reference_mask_path",
     }
 
 
@@ -126,7 +126,7 @@ def test_package_git_sha_is_a_string() -> None:
 
 
 def test_bundles_hold_the_v01_planar_set() -> None:
-    assert list(BUNDLES) == ["planar"]
+    assert list(BUNDLES) == ["planar", "pointline"]
     assert [roi.name for roi in BUNDLES["planar"]] == V01_ROIS
     assert CONFORMANCE_ROIS == V01_ROIS
     assert [p.name for p in build_conformance_primitives()] == V01_ROIS
@@ -135,8 +135,13 @@ def test_bundles_hold_the_v01_planar_set() -> None:
         for roi in rois:
             assert roi.bundle == name
             assert roi.truth_kind in TRUTH_KINDS
-            assert roi.truth_kind == "binary_mask" and roi.graded
-            assert roi.geometric_type.value == "CLOSED_PLANAR"
+            assert roi.graded
+            if name == "planar":
+                assert roi.truth_kind == "binary_mask"
+                assert roi.geometric_type.value == "CLOSED_PLANAR"
+            else:  # pointline: graded on its own metrics (test_pointline.py)
+                assert roi.truth_kind in ("points", "curve")
+                assert roi.geometric_type.value in ("POINT", "OPEN_PLANAR", "OPEN_NONPLANAR")
 
 
 def test_conformance_roi_rejects_unknown_bundle_and_truth_kind() -> None:

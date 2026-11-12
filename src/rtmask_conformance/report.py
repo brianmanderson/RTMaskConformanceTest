@@ -4,7 +4,9 @@ No external dependencies (no ``tabulate``, no ``rich``). ANSI color is only
 emitted when stdout is a TTY.
 
 Badges: ``PASS``, ``FAIL``, ``MISS`` (MISSING), ``GEOM`` (GEOMETRY_MISMATCH),
-``UNSUP`` (UNSUPPORTED_TYPE) and ``REPORT`` (REPORT_ONLY). The JSON report
+``UNSUP`` (UNSUPPORTED_TYPE) and ``REPORT`` (REPORT_ONLY). The text report
+has one table per kind of ground truth: binary masks (Dice, surface metrics,
+volume), points and curves (their own metrics, distances in mm). The JSON report
 (``Report.as_dict``) carries ``version``, ``config_source``, ``fixture``,
 ``claims``, ``report_only``, ``summary`` and per-ROI ``results``.
 """
@@ -15,6 +17,7 @@ import json
 import sys
 from pathlib import Path
 
+from .grading_pointline import POINTLINE_TRUTH_KINDS
 from .verify import Report, ResultRecord, Status
 
 
@@ -79,24 +82,16 @@ def render_text(report: Report) -> str:
         )
     lines.append("")
 
-    headers = ["status", "ROI                                ", " dice ", "sDSC1 ", "HD95mm", "MSD mm", "dV%   "]
-    lines.append(" ".join(headers))
-    lines.append("-" * len(" ".join(headers)))
-
-    for r in report.results:
-        m = r.metrics or {}
-        rel = m.get("volume_rel_err")
-        rel_pct = (rel * 100.0) if rel is not None else None
-        cells = [
-            _status_badge(r.status),
-            f"{r.roi:<35}",
-            _fmt_metric(m.get("dice"), "ratio"),
-            _fmt_metric(m.get("surface_dice_1mm"), "ratio"),
-            _fmt_metric(m.get("hd95_mm"), "mm"),
-            _fmt_metric(m.get("msd_mm"), "mm"),
-            f"{rel_pct:6.2f}" if rel_pct is not None else "  -   ",
-        ]
-        lines.append(" ".join(cells))
+    mask_rows = [r for r in report.results if r.truth_kind not in POINTLINE_TRUTH_KINDS]
+    tables = [
+        _mask_table(mask_rows),
+        _pointline_table([r for r in report.results if r.truth_kind == "points"], _POINT_COLUMNS),
+        _pointline_table([r for r in report.results if r.truth_kind == "curve"], _CURVE_COLUMNS),
+    ]
+    for i, table in enumerate(t for t in tables if t):
+        if i:
+            lines.append("")
+        lines.extend(table)
 
     failures = [r for r in report.results if r.status != Status.PASS]
     if failures:
@@ -110,6 +105,63 @@ def render_text(report: Report) -> str:
             for v in r.violations:
                 lines.append(f"    - {v}")
     return "\n".join(lines)
+
+
+def _mask_table(rows: list[ResultRecord]) -> list[str]:
+    """Binary-mask ROIs: Dice, surface DSC, HD95, MSD, volume error. Empty if no rows."""
+    if not rows:
+        return []
+    headers = ["status", "ROI                                ", " dice ", "sDSC1 ", "HD95mm", "MSD mm", "dV%   "]
+    lines = [" ".join(headers), "-" * len(" ".join(headers))]
+    for r in rows:
+        m = r.metrics or {}
+        rel = m.get("volume_rel_err")
+        rel_pct = (rel * 100.0) if rel is not None else None
+        cells = [
+            _status_badge(r.status),
+            f"{r.roi:<35}",
+            _fmt_metric(m.get("dice"), "ratio"),
+            _fmt_metric(m.get("surface_dice_1mm"), "ratio"),
+            _fmt_metric(m.get("hd95_mm"), "mm"),
+            _fmt_metric(m.get("msd_mm"), "mm"),
+            f"{rel_pct:6.2f}" if rel_pct is not None else "  -   ",
+        ]
+        lines.append(" ".join(cells))
+    return lines
+
+
+#: (header, metric key, format kind) for the point and the curve table.
+_POINT_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("recall", "point_recall", "ratio"),
+    ("FPrate", "point_fp_rate", "ratio"),
+    ("dMeanm", "point_mean_displacement_mm", "mm"),
+    ("dMaxmm", "point_max_displacement_mm", "mm"),
+)
+_CURVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("covRec", "curve_coverage_recall", "ratio"),
+    ("dMeanm", "curve_mean_distance_mm", "mm"),
+    ("dMaxmm", "curve_max_distance_mm", "mm"),
+    ("v2c mm", "curve_voxel_to_curve_mean_mm", "mm"),
+    ("arcL% ", "arc_length_error_pct", "pct"),
+)
+
+
+def _pointline_table(
+    rows: list[ResultRecord], columns: tuple[tuple[str, str, str], ...]
+) -> list[str]:
+    """Point (or curve) ROIs with their own metric columns. Empty if no rows."""
+    if not rows:
+        return []
+    headers = ["status", "ROI                                ", *(h for h, _, _ in columns)]
+    lines = [" ".join(headers), "-" * len(" ".join(headers))]
+    for r in rows:
+        m = r.metrics or {}
+        cells = [_status_badge(r.status), f"{r.roi:<35}"]
+        for _, key, kind in columns:
+            v = m.get(key)
+            cells.append(f"{v:6.2f}" if kind == "pct" and v is not None else _fmt_metric(v, kind))
+        lines.append(" ".join(cells))
+    return lines
 
 
 def print_report(report: Report) -> None:

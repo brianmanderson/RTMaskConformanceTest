@@ -38,7 +38,7 @@ import pydicom
 import pytest
 import SimpleITK as sitk
 
-from rtmask_conformance import CONFORMANCE_ROIS, load_config
+from rtmask_conformance import BUNDLES, CONFORMANCE_ROIS, load_config
 from rtmask_conformance._roi_set import build_conformance_primitives
 from rtmask_conformance._vendor.common.io import sitk_image_to_geometry, write_nifti
 from rtmask_conformance._vendor.groundtruth.partial_volume import (
@@ -495,9 +495,10 @@ def test_planar_bundle_byte_identical_to_v01(v02_fixture: Path, v01_reference: P
     expected = {rel: _sha256(v01_reference / rel) for rel in V01_PLANAR_FILES}
     actual = {rel: _sha256(v02_fixture / rel) for rel in V01_PLANAR_FILES}
     assert actual == expected
-    assert sorted(p.name for p in (v02_fixture / "rtstruct").iterdir()) == [
-        "primitives_planar.dcm"
-    ]
+    assert sorted(p.name for p in (v02_fixture / "rtstruct").iterdir()) == sorted(
+        f"primitives_{bundle}.dcm" for bundle in BUNDLES
+    )
+    # groundtruth/ holds binary-mask truth only.
     assert sorted(p.name for p in (v02_fixture / "groundtruth").iterdir()) == sorted(
         f"{roi}.nii.gz" for roi in CONFORMANCE_ROIS
     )
@@ -581,13 +582,15 @@ def test_manifest_v2_describes_the_fixture(v02_fixture: Path) -> None:
     assert m.manifest_version == "2"
     assert m.n_quadrature == 2 and m.pv_threshold == 0.5
     assert m.git_sha
-    assert list(m.bundles) == ["planar"]
-    planar = m.bundles["planar"]
-    assert planar.rtstruct_path == "rtstruct/primitives_planar.dcm"
-    assert planar.rtstruct_sha256 == _sha256(v02_fixture / planar.rtstruct_path)
-    assert planar.rois == list(CONFORMANCE_ROIS)
-    assert m.graded_rois == list(CONFORMANCE_ROIS)
-    for roi, entry in m.rois.items():
+    assert list(m.bundles) == list(BUNDLES)
+    for name, bundle in m.bundles.items():
+        assert bundle.rtstruct_path == f"rtstruct/primitives_{name}.dcm"
+        assert bundle.rtstruct_sha256 == _sha256(v02_fixture / bundle.rtstruct_path)
+        assert bundle.rois == [roi.name for roi in BUNDLES[name]]
+    assert m.graded_rois == [roi.name for rois in BUNDLES.values() for roi in rois]
+    # The planar bundle in detail; the pointline bundle is covered by test_pointline.py.
+    for roi in m.bundles["planar"].rois:
+        entry = m.rois[roi]
         assert entry.bundle == "planar"
         assert entry.geometric_type == "CLOSED_PLANAR"
         assert entry.truth_kind == "binary_mask" and entry.graded
@@ -602,16 +605,21 @@ def test_manifest_v2_describes_the_fixture(v02_fixture: Path) -> None:
         assert spec["pv_quadrature_per_axis"] == 2
 
 
-def test_verify_fixture_ground_truth_passes(v02_fixture: Path) -> None:
-    report = verify_fixture(v02_fixture / "groundtruth", v02_fixture, load_config())
-    assert report.summary["total"] == 7
-    assert report.summary["passed"] == 7, [r.violations for r in report.results]
-    assert [r.roi for r in report.results] == list(CONFORMANCE_ROIS)
+def test_verify_fixture_ground_truth_passes(v02_fixture: Path, tmp_path: Path) -> None:
+    pred = tmp_path / "pred"
+    shutil.copytree(v02_fixture / "groundtruth", pred)
+    if (v02_fixture / "reference_masks").is_dir():  # curve and point ROIs
+        shutil.copytree(v02_fixture / "reference_masks", pred, dirs_exist_ok=True)
+    report = verify_fixture(pred, v02_fixture, load_config())
+    every_roi = [roi.name for rois in BUNDLES.values() for roi in rois]
+    assert report.summary["total"] == len(every_roi)
+    assert report.summary["passed"] == len(every_roi), [r.violations for r in report.results]
+    assert [r.roi for r in report.results] == every_roi
     d = report.as_dict()
     assert d["version"] == REPORT_VERSION == "2.0"
     assert d["fixture"]["manifest_version"] == "2"
     assert d["fixture"]["n_quadrature"] == 2
-    assert d["fixture"]["bundles"] == ["planar"]
+    assert d["fixture"]["bundles"] == list(BUNDLES)
     assert d["fixture"]["package_version"]
     assert d["fixture"]["git_sha"]
 
