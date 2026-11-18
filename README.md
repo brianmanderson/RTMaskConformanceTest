@@ -146,8 +146,8 @@ scored against.
 | `helix_r12_pitch6_4turns_x300_y200` | `OPEN_NONPLANAR` | four-turn helix, r = 12 mm, pitch 6 mm, 302.5 mm long | as above |
 | `sinusoid_x150_y350_z20to80` | `OPEN_NONPLANAR` | path oscillating in x (±8 mm) and y (±4 mm) as z runs 20→80 mm, 110.5 mm long | as above |
 | `syed_bundle_5needles_x400_y100_z50` | `OPEN_NONPLANAR` | applicator bundle: five parallel 60 mm needles 7 mm apart, one ROI with five contours | as above |
-| `line_segment_x200_y200_to_x300_y280_z175` | `OPEN_PLANAR` | straight segment (200, 200)→(300, 280) mm on the z = 175 mm slice, 128.06 mm long | arc-length error ≤ 7.93 % |
-| `open_arc_r40_90deg_x380_y300_z180` | `OPEN_PLANAR` | 90° circular arc, r = 40 mm about (380, 300) mm on the z = 180 mm slice, 62.83 mm long | arc-length error ≤ 11.76 % |
+| `line_segment_x200_y200_to_x300_y280_z175` | `OPEN_PLANAR` | straight segment (200, 200)→(300, 280) mm on the z = 175 mm slice, 128.06 mm long | arc-length error ≤ 7.93 %; max curve distance ≤ 1.5 mm; mean voxel-to-curve distance ≤ 0.95 mm |
+| `open_arc_r40_90deg_x380_y300_z180` | `OPEN_PLANAR` | 90° circular arc, r = 40 mm about (380, 300) mm on the z = 180 mm slice, 62.83 mm long | arc-length error ≤ 11.76 %; max curve distance ≤ 1.5 mm; mean voxel-to-curve distance ≤ 0.95 mm |
 
 Point metrics: **recall** (fraction of points with a marked voxel within one voxel
 diagonal), **mean / max displacement** (point to nearest marked voxel) and **false-positive

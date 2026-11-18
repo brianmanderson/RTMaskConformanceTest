@@ -278,3 +278,52 @@ def test_registered_in_pointline_bundle() -> None:
         assert roi.truth_kind == "curve"
         assert roi.graded is True
         assert roi.geometric_type is GeometricType.OPEN_PLANAR
+
+
+# --------------------------------------------------------------------------
+#  Distance ceilings: a thick band fails, correct one-voxel-wide variants pass
+# --------------------------------------------------------------------------
+
+
+def _grade(mask: np.ndarray, name: str) -> list[str]:
+    from rtmask_conformance import grading_pointline as gp
+
+    roi = _rois()[name]
+    truth = gp.build_truth(roi.primitive, "curve", GEOMETRY)
+    metrics = gp.compute_metrics(mask, truth, GEOMETRY)
+    return gp.violations(metrics, gp.thresholds_for("default", name, "curve"))
+
+
+def _variants(primitive: AnalyticalPrimitive) -> dict[str, np.ndarray]:
+    """Correct one-voxel-wide rasterisations: Bresenham, supercover, truncating."""
+    from rtmask_conformance import grading_pointline as gp
+    from rtmask_conformance._vendor.metrics import densify_polyline
+
+    truth = gp.build_truth(primitive, "curve", GEOMETRY)
+    dense = densify_polyline(_polyline_xyz(primitive), max_step_mm=0.05)
+    idx = np.floor(GEOMETRY.physical_to_index(dense) + 1e-9).astype(int)
+    truncating = np.zeros(GEOMETRY.shape_zyx, dtype=np.uint8)
+    truncating[idx[:, 2], idx[:, 1], idx[:, 0]] = 1
+    return {
+        "bresenham": ideal_mask(primitive),
+        "supercover": gp.reference_rasterisation(truth),
+        "truncating": truncating,
+    }
+
+
+@pytest.mark.parametrize("name", [LINE, ARC])
+def test_correct_rasterisers_pass_every_ceiling(name: str) -> None:
+    for variant, mask in _variants(_rois()[name].primitive).items():
+        assert _grade(mask, name) == [], variant
+
+
+def test_line_drawn_as_a_thick_band_fails() -> None:
+    """Arc length alone passes a 5-voxel-wide band (its skeleton is the centre line);
+    the voxel-to-curve mean catches it."""
+    from scipy.ndimage import binary_dilation, generate_binary_structure
+
+    band = binary_dilation(
+        ideal_mask(_rois()[LINE].primitive), generate_binary_structure(3, 3), iterations=2
+    ).astype(np.uint8)
+    problems = _grade(band, LINE)
+    assert [p.split()[0] for p in problems] == ["curve_voxel_to_curve_mean_mm"], problems
