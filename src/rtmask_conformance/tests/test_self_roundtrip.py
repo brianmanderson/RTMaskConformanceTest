@@ -8,7 +8,7 @@ few seconds in CI.
 
 The second half covers the v0.2 fixture layout on one shared fixture: the
 ``planar`` bundle is byte-identical to v0.1, the manifest is v2, ``verify
---fixture`` passes 7/7 on the ground truth, and tampered ground truth is
+--fixture`` passes every ROI on the ground truth, and tampered ground truth is
 caught. Its content (voxels, geometry, contour structure exactly; contour
 coordinates within a stated tolerance) is also checked against one
 Windows-taken reference on every platform; ``data/planar_content_reference.npz``
@@ -38,7 +38,7 @@ import pydicom
 import pytest
 import SimpleITK as sitk
 
-from rtmask_conformance import CONFORMANCE_ROIS, load_config
+from rtmask_conformance import BUNDLES, CONFORMANCE_ROIS, load_config
 from rtmask_conformance._roi_set import build_conformance_primitives
 from rtmask_conformance._vendor.common.io import sitk_image_to_geometry, write_nifti
 from rtmask_conformance._vendor.groundtruth.partial_volume import (
@@ -118,6 +118,9 @@ V01_PLANAR_SHA256_BY_PLATFORM: dict[str, dict[str, str]] = {
 }
 
 V01_PLANAR_FILES: list[str] = sorted(V01_PLANAR_SHA256_BY_PLATFORM["win32"])
+
+#: The planar bundle's ROIs: the seven v0.1 primitives. Other bundles have their own tests.
+PLANAR_ROIS: list[str] = [roi.name for roi in BUNDLES["planar"]]
 
 # SHA-256 of the planar bundle's CONTENT (same fixture as above), one list for
 # every platform, taken on Windows. "mask" hashes the decoded voxel array as
@@ -261,7 +264,7 @@ def _planar_content_fingerprint(fixture: Path) -> dict:
     masks: dict[str, np.ndarray] = {}
     geometry: dict[str, str] = {}
     serialisation: dict[str, str] = {}
-    for roi in CONFORMANCE_ROIS:
+    for roi in PLANAR_ROIS:
         path = fixture / "groundtruth" / f"{roi}.nii.gz"
         img = sitk.ReadImage(str(path))
         arr = sitk.GetArrayFromImage(img).astype(np.uint8)
@@ -302,7 +305,7 @@ def _planar_content_fingerprint(fixture: Path) -> dict:
         "geometry": geometry,
         "contour_digests": {
             roi: [hashlib.sha256(line.encode()).hexdigest()[:16] for line in lines.get(roi, [])]
-            for roi in CONFORMANCE_ROIS
+            for roi in PLANAR_ROIS
         },
         "contour_ds": contour_ds,
         "serialisation": serialisation,
@@ -366,7 +369,7 @@ def _compare_contour_coordinates(fingerprint: dict, ref) -> tuple[list[str], dic
     problems: list[str] = []
     stats = {"strings": 0, "contours": 0, "max_mm": 0.0}
     expected_by_roi = _reference_contour_ds(ref)
-    for roi in CONFORMANCE_ROIS:
+    for roi in PLANAR_ROIS:
         expected_ds = expected_by_roi.get(roi, [])
         for i, (actual_raw, expected_raw) in enumerate(
                 zip(fingerprint["contour_ds"].get(roi, []), expected_ds, strict=False)):
@@ -495,9 +498,9 @@ def test_planar_bundle_byte_identical_to_v01(v02_fixture: Path, v01_reference: P
     expected = {rel: _sha256(v01_reference / rel) for rel in V01_PLANAR_FILES}
     actual = {rel: _sha256(v02_fixture / rel) for rel in V01_PLANAR_FILES}
     assert actual == expected
-    assert sorted(p.name for p in (v02_fixture / "rtstruct").iterdir()) == [
-        "primitives_planar.dcm"
-    ]
+    assert sorted(p.name for p in (v02_fixture / "rtstruct").iterdir()) == sorted(
+        f"primitives_{bundle}.dcm" for bundle in BUNDLES
+    )
     assert sorted(p.name for p in (v02_fixture / "groundtruth").iterdir()) == sorted(
         f"{roi}.nii.gz" for roi in CONFORMANCE_ROIS
     )
@@ -563,7 +566,7 @@ def test_planar_bundle_content_identical_across_platforms(v02_fixture: Path) -> 
     else:
         warnings.warn(f"{PLANAR_CONTENT_REFERENCE.name} not found; contour coordinates "
                       "were not compared", stacklevel=1)
-    assert sorted(PLANAR_CONTENT_SHA256) == sorted(CONFORMANCE_ROIS)
+    assert sorted(PLANAR_CONTENT_SHA256) == sorted(PLANAR_ROIS)
     assert not problems, (
         "planar bundle content differs from the Windows reference:\n" + "\n".join(problems)
         + "\nserialisation layers that differ:\n" + ("\n".join(serialisation) or "none")
@@ -581,22 +584,25 @@ def test_manifest_v2_describes_the_fixture(v02_fixture: Path) -> None:
     assert m.manifest_version == "2"
     assert m.n_quadrature == 2 and m.pv_threshold == 0.5
     assert m.git_sha
-    assert list(m.bundles) == ["planar"]
-    planar = m.bundles["planar"]
-    assert planar.rtstruct_path == "rtstruct/primitives_planar.dcm"
-    assert planar.rtstruct_sha256 == _sha256(v02_fixture / planar.rtstruct_path)
-    assert planar.rois == list(CONFORMANCE_ROIS)
+    assert list(m.bundles) == list(BUNDLES)
+    for bundle, rois in BUNDLES.items():
+        b = m.bundles[bundle]
+        assert b.rtstruct_path == f"rtstruct/primitives_{bundle}.dcm"
+        assert b.rtstruct_sha256 == _sha256(v02_fixture / b.rtstruct_path)
+        assert b.rois == [roi.name for roi in rois]
+    assert m.bundles["planar"].rois == PLANAR_ROIS
     assert m.graded_rois == list(CONFORMANCE_ROIS)
+    table = {roi.name: roi for rois in BUNDLES.values() for roi in rois}
     for roi, entry in m.rois.items():
-        assert entry.bundle == "planar"
-        assert entry.geometric_type == "CLOSED_PLANAR"
+        assert entry.bundle == table[roi].bundle
+        assert entry.geometric_type == table[roi].geometric_type.value
         assert entry.truth_kind == "binary_mask" and entry.graded
         assert entry.truth_path == f"groundtruth/{roi}.nii.gz"
         assert entry.truth_sha256 == _sha256(v02_fixture / entry.truth_path)
         assert entry.expected_prediction == f"{roi}.nii.gz"
         spec = json.loads((v02_fixture / entry.spec_path).read_text(encoding="utf-8"))
-        assert spec["bundle"] == "planar"
-        assert spec["geometric_type"] == "CLOSED_PLANAR"
+        assert spec["bundle"] == entry.bundle
+        assert spec["geometric_type"] == entry.geometric_type
         assert spec["truth_kind"] == "binary_mask"
         assert spec["graded"] is True
         assert spec["pv_quadrature_per_axis"] == 2
@@ -604,14 +610,15 @@ def test_manifest_v2_describes_the_fixture(v02_fixture: Path) -> None:
 
 def test_verify_fixture_ground_truth_passes(v02_fixture: Path) -> None:
     report = verify_fixture(v02_fixture / "groundtruth", v02_fixture, load_config())
-    assert report.summary["total"] == 7
-    assert report.summary["passed"] == 7, [r.violations for r in report.results]
+    assert report.summary["total"] == len(CONFORMANCE_ROIS)
+    assert report.summary["passed"] == len(CONFORMANCE_ROIS), [
+        r.violations for r in report.results]
     assert [r.roi for r in report.results] == list(CONFORMANCE_ROIS)
     d = report.as_dict()
     assert d["version"] == REPORT_VERSION == "2.0"
     assert d["fixture"]["manifest_version"] == "2"
     assert d["fixture"]["n_quadrature"] == 2
-    assert d["fixture"]["bundles"] == ["planar"]
+    assert d["fixture"]["bundles"] == list(BUNDLES)
     assert d["fixture"]["package_version"]
     assert d["fixture"]["git_sha"]
 
@@ -640,7 +647,7 @@ def test_verify_fixture_detects_tampered_truth(tampered_fixture: Path) -> None:
 
 def test_verify_fixture_unknown_bundle_rejected(v02_fixture: Path) -> None:
     with pytest.raises(ValueError, match="not in this fixture"):
-        verify_fixture(v02_fixture / "groundtruth", v02_fixture, bundles=["keyhole"])
+        verify_fixture(v02_fixture / "groundtruth", v02_fixture, bundles=["negative"])
 
 
 def test_cli_verify_fixture_error_paths(
@@ -650,7 +657,7 @@ def test_cli_verify_fixture_error_paths(
     assert cli_main(["verify", "--predictions", pred, "--fixture", str(tampered_fixture)]) == 2
     assert "does not match the manifest" in capsys.readouterr().err
     assert cli_main(["verify", "--predictions", pred, "--fixture", str(v02_fixture),
-                     "--bundle", "keyhole"]) == 2
+                     "--bundle", "negative"]) == 2
     assert cli_main(["verify", "--predictions", pred, "--groundtruth", pred,
                      "--bundle", "planar"]) == 2
     assert "--bundle requires --fixture" in capsys.readouterr().err
