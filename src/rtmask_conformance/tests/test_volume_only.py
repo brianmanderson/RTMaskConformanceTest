@@ -365,11 +365,11 @@ def test_exact_analytic_volumes_pass_under_half_slice_and_cylinder_flips(planar_
     assert rep.overall_pass, render_text(rep)
 
 
-def _contour_volumes_cc(fixture: Path) -> dict[str, tuple[float, float]]:
+def _contour_volumes_cc(fixture: Path, bundle: str = "planar") -> dict[str, tuple[float, float]]:
     """``{roi: (slab volume, contour-to-contour volume)}`` summed from the RTSTRUCT."""
     import pydicom
 
-    ds = pydicom.dcmread(str(fixture / rtstruct_relpath("planar")))
+    ds = pydicom.dcmread(str(fixture / rtstruct_relpath(bundle)))
     names = {int(r.ROINumber): str(r.ROIName) for r in ds.StructureSetROISequence}
     out = {}
     for rc in ds.ROIContourSequence:
@@ -400,6 +400,46 @@ def test_each_end_cap_convention_passes_its_own_claim(planar_fixture, tmp_path):
         crossed = _by_roi(verify_volumes(path, planar_fixture, other).results)
         assert crossed["cube"].status == Status.FAIL
         assert crossed["cylinder"].status == Status.FAIL
+
+
+@pytest.fixture(scope="module")
+def twin_fixture(tmp_path_factory) -> Path:
+    """The hole-encoding twins: CLOSEDPLANAR_XOR and keyhole bundles."""
+    return _volume_fixture(tmp_path_factory.mktemp("vol_twins") / "fixture",
+                           {b: BUNDLES[b] for b in ("xor", "keyhole")})
+
+
+def test_hole_encoding_twins_grade_like_their_planar_originals(twin_fixture, tmp_path):
+    """XOR and keyhole contours give the same end-cap areas, and both conventions pass."""
+    vols = {**_contour_volumes_cc(twin_fixture, "xor"), **_contour_volumes_cc(twin_fixture, "keyhole")}
+    assert set(vols) == {"hollow_sphere_xor", "straw_xor", "hollow_sphere_keyhole", "straw_keyhole"}
+    half = _config(tmp_path, "claims:\n  end_cap: half_slice\n")
+    for i, cfg in enumerate((half, load_config())):
+        rows = [[roi, repr(v[i])] for roi, v in vols.items()]
+        rep = verify_volumes(_csv(tmp_path / f"t{i}.csv", ["roi", "volume_cc"], rows), twin_fixture, cfg)
+        assert rep.overall_pass, render_text(rep)
+        assert max(abs(r.error_pct) for r in rep.results) < 0.6
+    r = _by_roi(rep.results)
+    # The straw's end contours are annuli in both encodings: the same cap, pi (40^2 - 20^2) * 1 mm.
+    for roi in ("straw_xor", "straw_keyhole"):
+        assert r[roi].end_cap_volume_cc == pytest.approx(math.pi * 1200 / 1000, rel=5e-3)
+    assert r["straw_xor"].end_cap_volume_cc == pytest.approx(r["straw_keyhole"].end_cap_volume_cc,
+                                                              rel=1e-3)
+
+
+def test_rejected_xor_rows_on_a_fixture_follow_the_claims(twin_fixture, tmp_path):
+    analytic = _analytic_cc(twin_fixture)
+    rows = [[roi, "" if roi.endswith("_xor") else repr(v),
+             "rejected" if roi.endswith("_xor") else "accepted"] for roi, v in analytic.items()]
+    path = _csv(tmp_path / "rej.csv", ["roi", "volume_cc", "import_outcome"], rows)
+    half_planar = _config(tmp_path, "claims:\n  geometric_types: [CLOSED_PLANAR]\n"
+                                    "  end_cap: half_slice\n")
+    r = _by_roi(verify_volumes(path, twin_fixture, half_planar).results)
+    assert r["straw_xor"].status == r["hollow_sphere_xor"].status == Status.UNSUPPORTED_TYPE
+    assert r["straw_keyhole"].status == Status.PASS
+    half_all = _config(tmp_path, "claims:\n  end_cap: half_slice\n")
+    r = _by_roi(verify_volumes(path, twin_fixture, half_all).results)
+    assert r["straw_xor"].status == Status.MISSING and r["straw_xor"].absent_reason == "rejected"
 
 
 def test_console_record_grades_like_its_projection(planar_fixture, tmp_path):
