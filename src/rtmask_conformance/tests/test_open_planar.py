@@ -11,12 +11,6 @@ Three groups of tests:
   trace of the emitted polyline on its slice) must pass them, each ceiling
   must be twice the error that rasteriser measures, and the arc closed into a
   filled polygon must fail.
-
-The ceiling tests call ``arc_length_metrics`` / ``curve_metrics`` from the
-vendored metrics, and the registration test needs the ``pointline`` bundle;
-both arrive with the pointline bundle. Until then those tests are
-``xfail(strict=True)``, so they turn into failures, and must be unmarked, the
-moment that support lands.
 """
 
 from __future__ import annotations
@@ -47,14 +41,6 @@ ARC = "open_arc_r40_90deg_x380_y300_z180"
 
 _SPEC = ReferenceCTSpec()
 GEOMETRY = Geometry(origin=_SPEC.origin, spacing=_SPEC.voxel_size, size=_SPEC.size)
-
-#: Why the ceiling tests are expected to fail until the pointline bundle lands.
-_NEEDS_CURVE_METRICS = pytest.mark.xfail(
-    strict=True,
-    raises=ImportError,
-    reason="arc_length_metrics / curve_metrics are vendored with the pointline bundle",
-)
-
 
 def _rois() -> dict[str, ConformanceROI]:
     return {roi.name: roi for roi in _open_planar_rois()}
@@ -254,7 +240,6 @@ def test_rtstruct_contour_lies_on_one_slice(
 # --------------------------------------------------------------------------
 
 
-@_NEEDS_CURVE_METRICS
 @pytest.mark.parametrize("name", [LINE, ARC])
 def test_ceiling_is_twice_the_ideal_discretisation_error(name: str) -> None:
     primitive = _rois()[name].primitive
@@ -265,7 +250,6 @@ def test_ceiling_is_twice_the_ideal_discretisation_error(name: str) -> None:
     assert ceiling == pytest.approx(2.0 * measured, abs=0.01)
 
 
-@_NEEDS_CURVE_METRICS
 @pytest.mark.parametrize("name", [LINE, ARC])
 def test_ideal_rasterisation_traces_the_curve(name: str) -> None:
     from rtmask_conformance._vendor.metrics import curve_metrics, densify_polyline
@@ -280,7 +264,6 @@ def test_ideal_rasterisation_traces_the_curve(name: str) -> None:
     assert cm.voxel_to_curve_max_mm < 1.0
 
 
-@_NEEDS_CURVE_METRICS
 def test_closed_filled_arc_fails_on_arc_length() -> None:
     arc = _rois()[ARC].primitive
     filled = closed_filled_mask(arc)
@@ -288,7 +271,6 @@ def test_closed_filled_arc_fails_on_arc_length() -> None:
     assert _arc_length_error_pct(filled, arc) > _ceiling(ARC)
 
 
-@pytest.mark.xfail(strict=True, reason="added to BUNDLES with the pointline bundle")
 def test_registered_in_pointline_bundle() -> None:
     registered = {roi.name: roi for roi in BUNDLES["pointline"]}
     for name in (LINE, ARC):
@@ -296,3 +278,52 @@ def test_registered_in_pointline_bundle() -> None:
         assert roi.truth_kind == "curve"
         assert roi.graded is True
         assert roi.geometric_type is GeometricType.OPEN_PLANAR
+
+
+# --------------------------------------------------------------------------
+#  Distance ceilings: a thick band fails, correct one-voxel-wide variants pass
+# --------------------------------------------------------------------------
+
+
+def _grade(mask: np.ndarray, name: str) -> list[str]:
+    from rtmask_conformance import grading_pointline as gp
+
+    roi = _rois()[name]
+    truth = gp.build_truth(roi.primitive, "curve", GEOMETRY)
+    metrics = gp.compute_metrics(mask, truth, GEOMETRY)
+    return gp.violations(metrics, gp.thresholds_for("default", name, "curve"))
+
+
+def _variants(primitive: AnalyticalPrimitive) -> dict[str, np.ndarray]:
+    """Correct one-voxel-wide rasterisations: Bresenham, supercover, truncating."""
+    from rtmask_conformance import grading_pointline as gp
+    from rtmask_conformance._vendor.metrics import densify_polyline
+
+    truth = gp.build_truth(primitive, "curve", GEOMETRY)
+    dense = densify_polyline(_polyline_xyz(primitive), max_step_mm=0.05)
+    idx = np.floor(GEOMETRY.physical_to_index(dense) + 1e-9).astype(int)
+    truncating = np.zeros(GEOMETRY.shape_zyx, dtype=np.uint8)
+    truncating[idx[:, 2], idx[:, 1], idx[:, 0]] = 1
+    return {
+        "bresenham": ideal_mask(primitive),
+        "supercover": gp.reference_rasterisation(truth),
+        "truncating": truncating,
+    }
+
+
+@pytest.mark.parametrize("name", [LINE, ARC])
+def test_correct_rasterisers_pass_every_ceiling(name: str) -> None:
+    for variant, mask in _variants(_rois()[name].primitive).items():
+        assert _grade(mask, name) == [], variant
+
+
+def test_line_drawn_as_a_thick_band_fails() -> None:
+    """Arc length alone passes a 5-voxel-wide band (its skeleton is the centre line);
+    the voxel-to-curve mean catches it."""
+    from scipy.ndimage import binary_dilation, generate_binary_structure
+
+    band = binary_dilation(
+        ideal_mask(_rois()[LINE].primitive), generate_binary_structure(3, 3), iterations=2
+    ).astype(np.uint8)
+    problems = _grade(band, LINE)
+    assert [p.split()[0] for p in problems] == ["curve_voxel_to_curve_mean_mm"], problems

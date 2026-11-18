@@ -221,7 +221,8 @@ def test_bundles_and_manifest(fixture: Path) -> None:
     assert [r.name for r in BUNDLES["xor"]] == ["hollow_sphere_xor", "straw_xor"]
     assert [r.name for r in BUNDLES["keyhole"]] == ["hollow_sphere_keyhole", "straw_keyhole"]
     m = read_manifest(fixture)
-    assert list(m.bundles) == ["planar", "xor", "keyhole"]
+    assert list(m.bundles) == list(BUNDLES)
+    assert list(m.bundles)[:3] == ["planar", "xor", "keyhole"]  # pointline follows
     for bundle in ("xor", "keyhole"):
         entry = m.bundles[bundle]
         assert entry.rtstruct_path == f"rtstruct/primitives_{bundle}.dcm"
@@ -323,7 +324,9 @@ def test_contour_data_within_ds_limits(fixture: Path, bundle: str) -> None:
 
 @e2e
 def test_verify_fixture_grades_twins_like_their_originals(fixture: Path, tmp_path: Path) -> None:
-    report = verify_fixture(fixture / "groundtruth", fixture, load_config())
+    # The binary-mask bundles; the pointline bundle has its own tests.
+    mask_bundles = ["planar", "xor", "keyhole"]
+    report = verify_fixture(fixture / "groundtruth", fixture, load_config(), bundles=mask_bundles)
     statuses = {r.roi: r.status for r in report.results}
     assert all(statuses[t] == Status.PASS for t in TWINS), statuses
     assert report.overall_pass
@@ -339,7 +342,7 @@ def test_verify_fixture_grades_twins_like_their_originals(fixture: Path, tmp_pat
     cfg_path = tmp_path / "no_xor.yaml"
     cfg_path.write_text("schema_version: 2\nclaims:\n  geometric_types: [CLOSED_PLANAR]\n",
                         encoding="utf-8")
-    report = verify_fixture(pred, fixture, load_config(cfg_path))
+    report = verify_fixture(pred, fixture, load_config(cfg_path), bundles=mask_bundles)
     statuses = {r.roi: r.status for r in report.results}
     assert statuses["hollow_sphere_xor"] == statuses["straw_xor"] == Status.UNSUPPORTED_TYPE
     assert statuses["hollow_sphere_keyhole"] == statuses["straw_keyhole"] == Status.PASS

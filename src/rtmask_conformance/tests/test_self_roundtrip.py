@@ -501,6 +501,7 @@ def test_planar_bundle_byte_identical_to_v01(v02_fixture: Path, v01_reference: P
     assert sorted(p.name for p in (v02_fixture / "rtstruct").iterdir()) == sorted(
         f"primitives_{bundle}.dcm" for bundle in BUNDLES
     )
+    # groundtruth/ holds binary-mask truth only.
     assert sorted(p.name for p in (v02_fixture / "groundtruth").iterdir()) == sorted(
         f"{roi}.nii.gz" for roi in CONFORMANCE_ROIS
     )
@@ -591,11 +592,14 @@ def test_manifest_v2_describes_the_fixture(v02_fixture: Path) -> None:
         assert b.rtstruct_sha256 == _sha256(v02_fixture / b.rtstruct_path)
         assert b.rois == [roi.name for roi in rois]
     assert m.bundles["planar"].rois == PLANAR_ROIS
-    assert m.graded_rois == list(CONFORMANCE_ROIS)
+    assert m.graded_rois == [roi.name for rois in BUNDLES.values() for roi in rois]
     table = {roi.name: roi for rois in BUNDLES.values() for roi in rois}
+    # Binary-mask ROIs in detail; curve and point ROIs are covered by test_pointline.py.
     for roi, entry in m.rois.items():
         assert entry.bundle == table[roi].bundle
         assert entry.geometric_type == table[roi].geometric_type.value
+        if entry.truth_kind != "binary_mask":
+            continue
         assert entry.truth_kind == "binary_mask" and entry.graded
         assert entry.truth_path == f"groundtruth/{roi}.nii.gz"
         assert entry.truth_sha256 == _sha256(v02_fixture / entry.truth_path)
@@ -608,12 +612,16 @@ def test_manifest_v2_describes_the_fixture(v02_fixture: Path) -> None:
         assert spec["pv_quadrature_per_axis"] == 2
 
 
-def test_verify_fixture_ground_truth_passes(v02_fixture: Path) -> None:
-    report = verify_fixture(v02_fixture / "groundtruth", v02_fixture, load_config())
-    assert report.summary["total"] == len(CONFORMANCE_ROIS)
-    assert report.summary["passed"] == len(CONFORMANCE_ROIS), [
-        r.violations for r in report.results]
-    assert [r.roi for r in report.results] == list(CONFORMANCE_ROIS)
+def test_verify_fixture_ground_truth_passes(v02_fixture: Path, tmp_path: Path) -> None:
+    pred = tmp_path / "pred"
+    shutil.copytree(v02_fixture / "groundtruth", pred)
+    if (v02_fixture / "reference_masks").is_dir():  # curve and point ROIs
+        shutil.copytree(v02_fixture / "reference_masks", pred, dirs_exist_ok=True)
+    report = verify_fixture(pred, v02_fixture, load_config())
+    every_roi = [roi.name for rois in BUNDLES.values() for roi in rois]
+    assert report.summary["total"] == len(every_roi)
+    assert report.summary["passed"] == len(every_roi), [r.violations for r in report.results]
+    assert [r.roi for r in report.results] == every_roi
     d = report.as_dict()
     assert d["version"] == REPORT_VERSION == "2.0"
     assert d["fixture"]["manifest_version"] == "2"

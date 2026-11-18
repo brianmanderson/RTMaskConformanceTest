@@ -354,3 +354,395 @@ def mean_surface_distance(
     return all_surface_metrics(tool_mask, reference_mask, voxel_size_mm).mean_surface_distance_mm
 
 
+# -----------------------------------------------------------------
+#  Helpers shared by point/curve metrics
+# -----------------------------------------------------------------
+
+
+def _marked_voxel_centers_mm(mask: np.ndarray, geometry: Geometry) -> np.ndarray:
+    """Return the physical (mm) coordinates of every non-zero voxel center.
+
+    SimpleITK / numpy store volumes as ``(slices, rows, cols) = (z, y, x)``;
+    ``geometry.index_to_physical`` expects ``(x, y, z)`` order, so we re-shuffle.
+    """
+    marked = np.argwhere(mask > 0)  # (M, 3) in (z, y, x) order
+    if marked.size == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    xyz_indices = marked[:, [2, 1, 0]].astype(np.float64)
+    return geometry.index_to_physical(xyz_indices)
+
+
+def _voxel_diagonal_mm(geometry: Geometry) -> float:
+    sx, sy, sz = geometry.spacing
+    return float(np.sqrt(sx * sx + sy * sy + sz * sz))
+
+
+def densify_polyline(points: np.ndarray, max_step_mm: float = 0.3) -> np.ndarray:
+    """Sub-sample a 3D polyline so consecutive samples are at most ``max_step_mm`` apart.
+
+    Used to give curve-coverage metrics sub-voxel-density analytical samples
+    regardless of how the parametric primitive sampled the curve when emitted.
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.shape[0] < 2:
+        return pts.copy()
+    out = [pts[0]]
+    for i in range(1, len(pts)):
+        seg = pts[i] - pts[i - 1]
+        seg_len = float(np.linalg.norm(seg))
+        if seg_len == 0:
+            continue
+        n = max(1, int(np.ceil(seg_len / max_step_mm)))
+        for k in range(1, n + 1):
+            out.append(pts[i - 1] + seg * (k / n))
+    return np.asarray(out, dtype=np.float64)
+
+
+# -----------------------------------------------------------------
+#  Point metrics (Section 5.4)
+# -----------------------------------------------------------------
+
+
+@dataclass
+class PointMetrics:
+    """Per-ROI point-cloud comparison report."""
+
+    n_points: int                              # how many analytical points there are
+    n_marked_voxels: int                       # how many voxels the tool marked
+    mean_point_displacement_mm: float | None   # average distance: analytical point -> nearest marked voxel
+    max_point_displacement_mm: float | None
+    recall: float | None                       # fraction of analytical points covered (within voxel diagonal)
+    fp_rate: float | None                      # fraction of marked voxels not near any analytical point
+
+
+def point_metrics(
+    tool_mask: np.ndarray,
+    analytical_points_mm: np.ndarray,
+    geometry: Geometry,
+) -> PointMetrics:
+    """Score a tool's POINT rasterization.
+
+    For each analytical point we measure the distance to the nearest non-zero
+    voxel in ``tool_mask``. ``recall`` counts analytical points whose nearest
+    voxel is within one voxel diagonal (i.e., the rasterization could plausibly
+    represent it). ``fp_rate`` flags marked voxels with no nearby analytical
+    point -- catches over-aggressive kernel marking or stray voxels.
+    """
+    pts = np.asarray(analytical_points_mm, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] == 0:
+        raise ValueError(f"analytical_points_mm must be (N>=1, 3); got {pts.shape}.")
+    n_points = int(pts.shape[0])
+    marked_xyz = _marked_voxel_centers_mm(tool_mask, geometry)
+    n_marked = int(marked_xyz.shape[0])
+
+    if n_marked == 0:
+        return PointMetrics(
+            n_points=n_points,
+            n_marked_voxels=0,
+            mean_point_displacement_mm=None,
+            max_point_displacement_mm=None,
+            recall=0.0,
+            fp_rate=None,
+        )
+
+    voxel_tree = cKDTree(marked_xyz)
+    dist_to_voxel, _ = voxel_tree.query(pts, k=1)
+
+    point_tree = cKDTree(pts)
+    dist_to_point, _ = point_tree.query(marked_xyz, k=1)
+
+    diag = _voxel_diagonal_mm(geometry)
+    return PointMetrics(
+        n_points=n_points,
+        n_marked_voxels=n_marked,
+        mean_point_displacement_mm=float(dist_to_voxel.mean()),
+        max_point_displacement_mm=float(dist_to_voxel.max()),
+        recall=float((dist_to_voxel <= diag).mean()),
+        fp_rate=float((dist_to_point > diag).mean()),
+    )
+
+
+# -----------------------------------------------------------------
+#  Curve metrics (Section 5.3)
+# -----------------------------------------------------------------
+
+
+@dataclass
+class CurveMetrics:
+    """Per-ROI curve comparison report.
+
+    Voxel-marking-vs-curve metrics, *not* skeleton arc-length metrics. Tools
+    rasterize curves to thin chains of voxels via DDA / Bresenham 3D; we score
+    how close those voxels are to the analytical curve. True arc-length error
+    via skeletonization is deferred to a later slice.
+    """
+
+    n_curve_samples: int
+    n_marked_voxels: int
+    coverage_recall: float | None              # fraction of analytical samples within one voxel diagonal of a marked voxel
+    mean_curve_distance_mm: float | None       # analytical -> nearest marked voxel
+    max_curve_distance_mm: float | None
+    voxel_to_curve_mean_mm: float | None       # marked voxel -> nearest analytical sample
+    voxel_to_curve_max_mm: float | None
+    endpoint_displacement_max_mm: float | None  # only set for OPEN_* curves
+
+
+def curve_metrics(
+    tool_mask: np.ndarray,
+    analytical_curve_mm: np.ndarray,
+    geometry: Geometry,
+    endpoints_mm: np.ndarray | None = None,
+) -> CurveMetrics:
+    """Score a tool's curve rasterization against an analytical polyline.
+
+    Parameters
+    ----------
+    tool_mask : np.ndarray
+        The tool's rasterized voxel mask (z, y, x).
+    analytical_curve_mm : np.ndarray
+        ``(N, 3)`` densely-sampled physical coordinates along the analytical
+        curve. Should be at least sub-voxel density (use :func:`densify_polyline`).
+    geometry : Geometry
+        Reference grid geometry.
+    endpoints_mm : np.ndarray | None
+        ``(K, 3)`` endpoint coordinates for OPEN_* curves, or ``None`` for
+        closed curves. The endpoint-displacement metric is only computed when
+        these are supplied.
+    """
+    curve = np.asarray(analytical_curve_mm, dtype=np.float64)
+    if curve.ndim != 2 or curve.shape[1] != 3 or curve.shape[0] < 2:
+        raise ValueError(f"analytical_curve_mm must be (N>=2, 3); got {curve.shape}.")
+
+    marked_xyz = _marked_voxel_centers_mm(tool_mask, geometry)
+    n_marked = int(marked_xyz.shape[0])
+    n_samples = int(curve.shape[0])
+    diag = _voxel_diagonal_mm(geometry)
+
+    if n_marked == 0:
+        return CurveMetrics(
+            n_curve_samples=n_samples,
+            n_marked_voxels=0,
+            coverage_recall=0.0,
+            mean_curve_distance_mm=None,
+            max_curve_distance_mm=None,
+            voxel_to_curve_mean_mm=None,
+            voxel_to_curve_max_mm=None,
+            endpoint_displacement_max_mm=None,
+        )
+
+    voxel_tree = cKDTree(marked_xyz)
+    dist_curve_to_voxel, _ = voxel_tree.query(curve, k=1)
+
+    point_tree = cKDTree(curve)
+    dist_voxel_to_curve, _ = point_tree.query(marked_xyz, k=1)
+
+    endpoint_max = None
+    if endpoints_mm is not None and len(endpoints_mm) > 0:
+        endpoint_dist, _ = voxel_tree.query(np.asarray(endpoints_mm, dtype=np.float64), k=1)
+        endpoint_max = float(endpoint_dist.max())
+
+    return CurveMetrics(
+        n_curve_samples=n_samples,
+        n_marked_voxels=n_marked,
+        coverage_recall=float((dist_curve_to_voxel <= diag).mean()),
+        mean_curve_distance_mm=float(dist_curve_to_voxel.mean()),
+        max_curve_distance_mm=float(dist_curve_to_voxel.max()),
+        voxel_to_curve_mean_mm=float(dist_voxel_to_curve.mean()),
+        voxel_to_curve_max_mm=float(dist_voxel_to_curve.max()),
+        endpoint_displacement_max_mm=endpoint_max,
+    )
+
+
+# -----------------------------------------------------------------
+#  Arc-length metric (Section 5.3 -- the headline curve metric)
+#
+#  The methodology document defines this as "percentage difference between
+#  rasterized polyline length and analytical arc length". For our binary
+#  voxel masks the rasterized "polyline length" is computed as:
+#
+#    1. Skeletonize the rasterized mask down to a 1-voxel-wide chain via 3D
+#       morphological thinning (skimage.morphology.skeletonize_3d).
+#    2. Build the 26-connectivity neighbor graph over the skeleton voxels.
+#    3. Sum every unique edge length (Euclidean distance in physical mm
+#       between adjacent voxel centers, accounting for image spacing).
+#
+#  For multi-component primitives (e.g. MultiNeedleBundle) every connected
+#  skeleton component contributes; we report the total measured length and
+#  compare it to the sum of analytical arc lengths.
+# -----------------------------------------------------------------
+
+
+@dataclass
+class ArcLengthMetrics:
+    n_skeleton_voxels: int
+    raster_arc_length_mm: float | None
+    analytical_arc_length_mm: float
+    arc_length_error_mm: float | None
+    arc_length_error_pct: float | None
+
+
+def _skeleton_arc_length_mm(
+    skeleton: np.ndarray, voxel_size_mm: tuple[float, float, float]
+) -> tuple[float, int]:
+    """Estimate the rasterized polyline length by summing edge lengths along the
+    *longest simple path* through each connected component of the skeleton's
+    26-neighbor graph.
+
+    Why longest-path rather than "sum every unique edge":
+
+    A naive sum-all-edges estimator over-counts by edges that branch off the
+    main curve (for instance, a 1-voxel side-spur left behind after
+    skeletonization, or extra edges where a 3D-DDA trace produces locally
+    thicker patches at slope changes). It also penalizes rasterizers that use
+    diagonal voxel steps because each sqrt(3) edge contributes more than
+    three orthogonal edges of length 1 -- even when both rasterize the same
+    underlying analytical line. Longest-path tracing avoids both biases:
+    only the path between the two extremal voxels is summed, regardless of
+    how many incidental short branches exist along the way.
+
+    For multi-component primitives (e.g. ``MultiNeedleBundle``) every
+    connected component contributes its own longest path; the total is the
+    sum of those lengths.
+
+    The "longest path" is computed via the 2-BFS diameter trick: from any
+    starting node, find the farthest node A; from A, find the farthest node
+    B; the path A->B is the diameter (exact for tree-structured skeletons,
+    a tight lower bound for the rare cases where skeletonize leaves small
+    cycles). Distances are weighted by physical voxel spacing.
+
+    Returns ``(total_length_mm, n_skeleton_voxels)``.
+    """
+    coords = np.argwhere(skeleton)  # (N, 3) in (z, y, x)
+    n = int(coords.shape[0])
+    if n < 2:
+        return 0.0, n
+
+    sx, sy, sz = voxel_size_mm
+    spacing_zyx = (sz, sy, sx)
+    idx = {(int(c[0]), int(c[1]), int(c[2])): i for i, c in enumerate(coords)}
+
+    # Pre-compute the 26 nonzero offsets and their physical edge lengths.
+    offsets: list[tuple[int, int, int, float]] = []
+    for dz in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dz == 0 and dy == 0 and dx == 0:
+                    continue
+                length = float(
+                    np.sqrt(
+                        (dz * spacing_zyx[0]) ** 2
+                        + (dy * spacing_zyx[1]) ** 2
+                        + (dx * spacing_zyx[2]) ** 2
+                    )
+                )
+                offsets.append((dz, dy, dx, length))
+
+    # Adjacency list keyed by voxel index: list of (neighbor_idx, edge_length).
+    adjacency: list[list[tuple[int, float]]] = [[] for _ in range(n)]
+    for i, c in enumerate(coords):
+        z, y, x = int(c[0]), int(c[1]), int(c[2])
+        for dz, dy, dx, length in offsets:
+            j = idx.get((z + dz, y + dy, x + dx))
+            if j is None or j == i:
+                continue
+            adjacency[i].append((j, length))
+
+    # 2-BFS diameter per connected component.
+    import heapq
+
+    def _farthest_node_and_distance(source: int) -> tuple[int, float]:
+        """Dijkstra from ``source`` over edge weights; return farthest node and its distance."""
+        dist: dict[int, float] = {source: 0.0}
+        heap: list[tuple[float, int]] = [(0.0, source)]
+        farthest = source
+        max_dist = 0.0
+        while heap:
+            d, u = heapq.heappop(heap)
+            if d > dist.get(u, float("inf")):
+                continue
+            if d > max_dist:
+                max_dist = d
+                farthest = u
+            for v, w in adjacency[u]:
+                nd = d + w
+                if nd < dist.get(v, float("inf")):
+                    dist[v] = nd
+                    heapq.heappush(heap, (nd, v))
+        return farthest, max_dist
+
+    visited = [False] * n
+    total = 0.0
+    for start in range(n):
+        if visited[start]:
+            continue
+        # BFS to mark the component this node belongs to.
+        component_nodes: list[int] = []
+        stack = [start]
+        while stack:
+            u = stack.pop()
+            if visited[u]:
+                continue
+            visited[u] = True
+            component_nodes.append(u)
+            for v, _ in adjacency[u]:
+                if not visited[v]:
+                    stack.append(v)
+
+        if len(component_nodes) < 2:
+            continue
+        # 2-BFS: from any node in the component find A (farthest), then from A find B.
+        a, _ = _farthest_node_and_distance(component_nodes[0])
+        _, length = _farthest_node_and_distance(a)
+        total += length
+
+    return total, n
+
+
+def arc_length_metrics(
+    tool_mask: np.ndarray,
+    analytical_arc_length_mm: float,
+    voxel_size_mm: tuple[float, float, float],
+) -> ArcLengthMetrics:
+    """Score a tool's rasterization of a curve against the analytical arc length.
+
+    Parameters
+    ----------
+    tool_mask : np.ndarray
+        ``(z, y, x)`` binary mask containing the rasterized curve (or curves).
+    analytical_arc_length_mm : float
+        Closed-form (or numerically-integrated) arc length from the primitive's
+        spec JSON. For multi-curve primitives like ``MultiNeedleBundle`` this is
+        the sum across all sub-curves.
+    voxel_size_mm : tuple
+        Reference grid spacing.
+    """
+    # Lazy import: skimage's skeletonizer handles N-D inputs automatically as
+    # of skimage 0.26 (the older ``skeletonize_3d`` was unified into the
+    # generic ``skeletonize``).
+    from skimage.morphology import skeletonize
+
+    skeleton = skeletonize((tool_mask > 0).astype(np.uint8)).astype(bool)
+    raster_length, n_skel = _skeleton_arc_length_mm(skeleton, voxel_size_mm)
+
+    if n_skel == 0:
+        return ArcLengthMetrics(
+            n_skeleton_voxels=0,
+            raster_arc_length_mm=None,
+            analytical_arc_length_mm=float(analytical_arc_length_mm),
+            arc_length_error_mm=None,
+            arc_length_error_pct=None,
+        )
+
+    abs_err = abs(raster_length - float(analytical_arc_length_mm))
+    rel_err = (
+        100.0 * abs_err / float(analytical_arc_length_mm)
+        if analytical_arc_length_mm > 0
+        else None
+    )
+    return ArcLengthMetrics(
+        n_skeleton_voxels=n_skel,
+        raster_arc_length_mm=float(raster_length),
+        analytical_arc_length_mm=float(analytical_arc_length_mm),
+        arc_length_error_mm=float(abs_err),
+        arc_length_error_pct=rel_err,
+    )
