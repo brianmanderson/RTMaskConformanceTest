@@ -60,3 +60,28 @@ jobs:
           python -m rtmask_conformance.cli verify \
               --predictions ./fixture/groundtruth \
               --groundtruth ./fixture/groundtruth
+
+      # Volume-only mode on the same fixture: the closed-form analytic volume of
+      # every ROI (empty for curve and point ROIs, which are REPORT_ONLY) graded
+      # under end_cap: half_slice, whose reference is the analytic volume.
+      - name: CLI smoke test (verify --volumes, exact analytic volumes, end_cap half_slice)
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import csv, json
+          from pathlib import Path
+          from rtmask_conformance.manifest import read_manifest
+          fixture = Path("fixture")
+          with open("analytic_volumes.csv", "w", newline="") as fh:
+              w = csv.writer(fh)
+              w.writerow(["roi", "volume_cc"])
+              for roi, entry in read_manifest(fixture).rois.items():
+                  spec = json.loads((fixture / entry.spec_path).read_text(encoding="utf-8"))
+                  v = spec.get("analytical_volume_mm3")
+                  w.writerow([roi, repr(v / 1000.0) if v else ""])
+          EOF
+          printf 'schema_version: 2\nclaims:\n  end_cap: half_slice\n' > half_slice.yaml
+          python -m rtmask_conformance.cli verify \
+              --volumes ./analytic_volumes.csv \
+              --fixture ./fixture \
+              --config ./half_slice.yaml

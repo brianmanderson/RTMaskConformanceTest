@@ -59,6 +59,8 @@ def _fmt_metric(value: float | None, kind: str) -> str:
 
 def render_text(report: Report) -> str:
     """Return a human-readable plain-text rendering of ``report``."""
+    if getattr(report, "settings", None) is not None:  # volume-only report
+        return render_volume_text(report)
     lines: list[str] = []
     lines.append(
         f"rtmask-conformance verify  config={report.config_source}  "
@@ -164,9 +166,68 @@ def _pointline_table(
     return lines
 
 
+def render_volume_text(report) -> str:
+    """Plain-text rendering of a volume-only report (``verify --volumes``).
+
+    One row per ROI: status, ROI, analytic volume, reference volume (analytic
+    adjusted for the declared end cap), reported volume, error and the
+    tolerance it was graded at, all volumes in cc. A trailing ``*`` marks a
+    display-limited row; ``api`` marks a row graded on its API volume.
+    """
+    st, s = report.settings, report.summary
+    lines = [
+        f"rtmask-conformance verify --volumes  config={report.config_source}  "
+        f"{s['passed']}/{s['total']} passed  (volume only)",
+        f"  input {st['input']}  column={st['volume_column']}  "
+        f"end_cap={st['end_cap']}  tolerance={100.0 * st['tolerance']:.2f} %  "
+        f"volume_source={st['volume_source']}",
+    ]
+    for key, label in (("failed", "FAILED"), ("missing", "MISSING"),
+                       ("unsupported_type", "UNSUPPORTED_TYPE"), ("report_only", "REPORT_ONLY")):
+        if s.get(key):
+            lines.append(f"  {label}: {s[key]}")
+    lines.append("")
+
+    def cc(v: float | None) -> str:
+        return f"{v:10.4f}" if v is not None else "      -   "
+
+    headers = ["status", "ROI                                ", "analyt cc ", "ref cc    ",
+               "reported  ", "err %  ", "tol %  ", "graded"]
+    lines.append(" ".join(headers))
+    lines.append("-" * len(" ".join(headers)))
+    for r in report.results:
+        err = f"{r.error_pct:+7.3f}" if r.error_pct is not None else "   -   "
+        tol = (f"{r.effective_tolerance_pct:6.3f}{'*' if r.display_limited else ' '}"
+               if r.effective_tolerance_pct is not None else "   -   ")
+        lines.append(" ".join([
+            _status_badge(r.status), f"{r.roi:<35}", cc(r.analytic_volume_cc),
+            cc(r.reference_volume_cc), cc(r.reported_volume_cc), err, tol,
+            r.graded_volume or r.absent_reason or "-",
+        ]))
+    if any(r.display_limited for r in report.results):
+        lines.append("  * display-limited: half a unit in the last displayed decimal exceeds "
+                     "the tolerance; graded at the display quantisation")
+
+    details = [r for r in report.results if r.status != Status.PASS or r.message]
+    if details or report.unmatched_rows:
+        lines.append("")
+        lines.append("Details:")
+        for r in details:
+            outcome = f"  import_outcome={r.import_outcome}" if r.import_outcome else ""
+            lines.append(f"  {r.roi} [{r.status.value}]{outcome}")
+            for v in r.violations:
+                lines.append(f"    - {v}")
+            if r.message:
+                lines.append(f"    message: {r.message}")
+        if report.unmatched_rows:
+            lines.append(f"  rows for ROIs not in the fixture (ignored): "
+                         f"{', '.join(report.unmatched_rows)}")
+    return "\n".join(lines)
+
+
 def print_report(report: Report) -> None:
     """Print the plain-text rendering to stdout."""
     print(render_text(report))
 
 
-__all__ = ["ResultRecord", "print_report", "render_text", "write_json"]
+__all__ = ["ResultRecord", "print_report", "render_text", "render_volume_text", "write_json"]

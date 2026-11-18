@@ -5,6 +5,7 @@ A threshold YAML follows this schema (schema_version: 2)::
     schema_version: 2
     claims:
         geometric_types: [CLOSED_PLANAR, CLOSEDPLANAR_XOR]   # default: all five
+        end_cap: none                  # or half_slice; volume-only mode only
     report_only: [torus, OPEN_PLANAR]   # ROI names or geometric types; default: none
     defaults:
         dice: 0.95
@@ -14,18 +15,23 @@ A threshold YAML follows this schema (schema_version: 2)::
         volume_rel_err: 0.03
     primitives:
         torus: { dice: 0.90 }   # shallow-merge over defaults; any ROI name
+    volume_only:
+        tolerance: 0.01         # relative volume error, `verify --volumes` only
 
 ``claims.geometric_types`` lists the Contour Geometric Type values the tool
 under test supports. A ROI whose type is not claimed and whose prediction is
 absent is ``UNSUPPORTED_TYPE``, not a failure. ``report_only`` lists ROI names
 or geometric types that are scored and reported but never graded.
+``claims.end_cap`` (``none`` or ``half_slice``) declares how the system closes
+a structure beyond its end contours; only ``verify --volumes`` reads it, as it
+does ``volume_only.tolerance`` (see :mod:`rtmask_conformance.volume_only`).
 
-Schema 1 files (no ``claims``, no ``report_only``) still load: they claim
+Schema 1 files (no ``claims``, no ``report_only``, no ``volume_only``) still load: they claim
 every type and mark nothing report-only. A user YAML's per-primitive
 overrides shallow-merge over the user's own ``defaults``, which themselves
 shallow-merge over the package-shipped defaults; a user ``claims`` block
-replaces the shipped one, and a user ``report_only`` list adds to the
-shipped one. Unknown ``schema_version`` values are rejected.
+replaces the shipped one, a user ``report_only`` list adds to the
+shipped one, and a user ``volume_only`` block shallow-merges over the shipped one. Unknown ``schema_version`` values are rejected.
 """
 
 from __future__ import annotations
@@ -50,7 +56,16 @@ STANDARD_GEOMETRIC_TYPES: tuple[str, ...] = (
 )
 
 #: Keys accepted inside a ``claims:`` block.
-CLAIMS_KEYS: set[str] = {"geometric_types"}
+CLAIMS_KEYS: set[str] = {"geometric_types", "end_cap"}
+
+#: ``claims.end_cap`` values, the first the default (volume-only mode).
+END_CAP_VALUES: tuple[str, ...] = ("none", "half_slice")
+
+#: Keys accepted inside a ``volume_only:`` block.
+VOLUME_ONLY_KEYS: set[str] = {"tolerance"}
+
+#: Default relative volume tolerance of ``verify --volumes``.
+DEFAULT_VOLUME_TOLERANCE: float = 0.01
 
 # Closed set of metric keys accepted in either `defaults` or per-primitive blocks.
 METRIC_KEYS: set[str] = {
@@ -93,6 +108,10 @@ class ConformanceConfig:
     claimed_types: tuple[str, ...] = STANDARD_GEOMETRIC_TYPES
     #: ROI names and geometric types that are scored but never graded.
     report_only: tuple[str, ...] = field(default_factory=tuple)
+    #: End-cap convention claimed for volume-only grading (``END_CAP_VALUES``).
+    end_cap: str = END_CAP_VALUES[0]
+    #: Relative volume tolerance of volume-only grading.
+    volume_tolerance: float = DEFAULT_VOLUME_TOLERANCE
 
     def claims(self, geometric_type: str | None) -> bool:
         """Whether ``geometric_type`` is claimed.
@@ -166,6 +185,36 @@ def _validate_claims(block: Any, context: str) -> tuple[str, ...]:
     return tuple(t for t in STANDARD_GEOMETRIC_TYPES if t in types)
 
 
+def _validate_end_cap(block: dict[str, Any], context: str) -> str | None:
+    """``claims.end_cap`` from an already-validated claims mapping, or ``None`` if absent."""
+    if "end_cap" not in block:
+        return None
+    value = block["end_cap"]
+    if value not in END_CAP_VALUES:
+        raise ValueError(
+            f"{context}.end_cap: {value!r} not one of {list(END_CAP_VALUES)}"
+        )
+    return value
+
+
+def _validate_volume_only(block: Any, context: str) -> dict[str, float]:
+    """Validate a ``volume_only:`` block."""
+    if not isinstance(block, dict):
+        raise ValueError(f"{context}: expected a mapping, got {type(block).__name__}")
+    unknown = sorted(set(block) - VOLUME_ONLY_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{context}: unknown key(s) {unknown}. Allowed: {sorted(VOLUME_ONLY_KEYS)}"
+        )
+    out: dict[str, float] = {}
+    if "tolerance" in block:
+        tol = block["tolerance"]
+        if isinstance(tol, bool) or not isinstance(tol, (int, float)) or not 0 < tol < 1:
+            raise ValueError(f"{context}.tolerance: expected a fraction in (0, 1), got {tol!r}")
+        out["tolerance"] = float(tol)
+    return out
+
+
 def _validate_report_only(block: Any, context: str) -> tuple[str, ...]:
     """Validate a ``report_only:`` list of ROI names or geometric types (deduplicated)."""
     if not isinstance(block, list) or not all(isinstance(t, str) and t for t in block):
@@ -181,7 +230,7 @@ def _check_schema(data: dict[str, Any], context: str) -> int:
             f"expected one of {sorted(SUPPORTED_SCHEMA_VERSIONS)}"
         )
     if version == 1:
-        v2_only = sorted(k for k in ("claims", "report_only") if k in data)
+        v2_only = sorted(k for k in ("claims", "report_only", "volume_only") if k in data)
         if v2_only:
             raise ValueError(f"{context}: {v2_only} require schema_version: 2")
     return version
@@ -216,6 +265,13 @@ def load_config(user_yaml: str | Path | None = None) -> ConformanceConfig:
         for roi, block in base_primitives_raw.items()
     }
     base_claims = _validate_claims(shipped.get("claims") or {}, "shipped.claims")
+    base_end_cap = (
+        _validate_end_cap(shipped.get("claims") or {}, "shipped.claims") or END_CAP_VALUES[0]
+    )
+    base_volume_only = _validate_volume_only(
+        shipped.get("volume_only") or {}, "shipped.volume_only"
+    )
+    base_tolerance = base_volume_only.get("tolerance", DEFAULT_VOLUME_TOLERANCE)
     base_report_only = _validate_report_only(
         shipped.get("report_only") or [], "shipped.report_only"
     )
@@ -227,6 +283,8 @@ def load_config(user_yaml: str | Path | None = None) -> ConformanceConfig:
             config_source="default",
             claimed_types=base_claims,
             report_only=base_report_only,
+            end_cap=base_end_cap,
+            volume_tolerance=base_tolerance,
         )
 
     user_path = Path(user_yaml)
@@ -251,6 +309,12 @@ def load_config(user_yaml: str | Path | None = None) -> ConformanceConfig:
     claims = (
         _validate_claims(user["claims"], "user.claims") if "claims" in user else base_claims
     )
+    # A user claims block replaces the shipped one, end_cap included.
+    end_cap = (
+        (_validate_end_cap(user["claims"], "user.claims") or END_CAP_VALUES[0])
+        if "claims" in user else base_end_cap
+    )
+    user_volume_only = _validate_volume_only(user.get("volume_only") or {}, "user.volume_only")
     report_only = tuple(dict.fromkeys(
         base_report_only
         + _validate_report_only(user.get("report_only") or [], "user.report_only")
@@ -262,4 +326,6 @@ def load_config(user_yaml: str | Path | None = None) -> ConformanceConfig:
         config_source=str(user_path),
         claimed_types=claims,
         report_only=report_only,
+        end_cap=end_cap,
+        volume_tolerance=user_volume_only.get("tolerance", base_tolerance),
     )

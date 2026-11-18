@@ -157,3 +157,11 @@ pointline:
     arc_length_error_pct: 11.76
     curve_max_distance_mm: 1.5
     curve_voxel_to_curve_mean_mm: 0.95
+
+# `verify --volumes` (volume-only mode, for systems that report structure volumes
+# but export no masks): the relative volume error allowed against the analytic
+# volume. Graded at max(tolerance, display quantisation) when the CSV gives
+# volume_decimals. The end-cap convention is a claim (`claims.end_cap: none`
+# (default) or `half_slice`); see rtmask_conformance/volume_only.py.
+volume_only:
+  tolerance: 0.01

@@ -262,6 +262,36 @@ the shipped claims. Every verify report records the claims and the `report_only`
 used. A `schema_version: 1` file still loads and claims every type; `claims:` and
 `report_only:` need `schema_version: 2`, and an unknown `schema_version` is rejected.
 
+## Planning systems: volume-only mode
+
+A treatment planning system imports RTSTRUCTs but usually cannot export a voxel mask; what it
+shows is the volume of each structure. `verify --volumes` grades those volumes, and nothing
+else, against the closed-form analytic volume of each primitive. Import the fixture's
+RTSTRUCTs onto its `refct/` series, copy each structure's displayed volume into the
+`volumes_template.csv` that `generate` writes into the fixture (`roi,volume_cc`, or a
+`volume_mm3` column; optional `volume_decimals`, `import_outcome` (`accepted`, `warned`,
+`rejected`, `rejected_file`) and `message`; other columns are ignored), and run the command
+below. A full-precision `<system>_volume_cc_api` column, where filled, is graded instead of the
+displayed volume (`--volume-source auto`, the default; `displayed` or `api` picks one). An ROI passes when its relative volume error is within 1 % (`volume_only.tolerance`
+in the YAML, or `--volume-tolerance`), widened to half a unit in the last displayed decimal
+when `volume_decimals` says the display cannot resolve 1 % (the result is then marked
+`display_limited`). A rejected ROI is `MISSING`, or `UNSUPPORTED_TYPE` if its contour type is
+not claimed. Curve and point ROIs enclose no volume and are `REPORT_ONLY`.
+
+Systems differ in where a structure ends: at its first and last contours, or half a slice
+beyond them (each contour a slab one slice thick). Declare yours under `claims:` with
+`end_cap: none` (the default) or `end_cap: half_slice`. The fixture's flat caps lie half a
+slice beyond the end contours, so the `half_slice` reference is the analytic volume and the
+`none` reference is the analytic volume less half a slice of end cross-section at each end,
+`V_analytic - (A_first + A_last) * dz / 2`. The two differ by 1.25 % on the 80 mm cylinder at
+1 mm slices, more than the tolerance, so a system that declares the wrong convention fails.
+Volume-only grading cannot see where a structure is: a shifted or rotated structure with the
+right volume passes.
+
+```bash
+rtmask-conformance verify --volumes volumes.csv --fixture ./fixture --config claims.yaml --report-json volumes.json
+```
+
 ## Use as a pytest module
 
 ```bash
