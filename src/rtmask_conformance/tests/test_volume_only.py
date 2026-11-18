@@ -439,6 +439,47 @@ def test_console_record_grades_like_its_projection(planar_fixture, tmp_path):
     assert rec.settings["volume_column"] == "raystation_volume_cc"
 
 
+def test_volume_source_gives_displayed_and_api_verdicts_from_one_record(planar_fixture, tmp_path):
+    """The full record sheet with the API column filled: each source gives its own verdict."""
+    analytic = _analytic_cc(planar_fixture)
+    header = ["bundle", "roi", "contour_geometric_type", "import_outcome", "message_verbatim",
+              "raystation_volume_cc", "raystation_version", "date", "source", "rtstruct_sha256",
+              "fixture_version", "file_outcome", "appears", "displayed_name", "displayed_type",
+              "volume_decimals", "raystation_volume_cc_api", "notes"]
+    rows = []
+    for roi, v in analytic.items():
+        api = "" if roi == "torus" else repr(v)  # torus: no API volume recorded
+        rows.append(["planar", roi, "CLOSED_PLANAR", "accepted", "", f"{v * 1.015:.2f}", "RS 1.0",
+                     "2026-11-18", "suite", "ab" * 32, __version__, "accepted", "yes", "",
+                     "ROI/Contours", 2, api, ""])
+    path = _csv(tmp_path / "record.csv", header, rows)
+    half = _config(tmp_path, "claims:\n  end_cap: half_slice\n")
+
+    def run(source):
+        rep = verify_volumes(path, planar_fixture, half, volume_source=source)
+        assert rep.settings["volume_source"] == source
+        assert f"volume_source={source}" in render_text(rep)
+        return _by_roi(rep.results)
+
+    auto, shown, api = run("auto"), run("displayed"), run("api")
+    for roi in analytic:
+        assert shown[roi].graded_volume == "displayed" and shown[roi].status == Status.FAIL
+        if roi == "torus":
+            assert auto[roi].graded_volume == "displayed" and auto[roi].status == Status.FAIL
+            assert api[roi].status == Status.MISSING
+            assert api[roi].absent_reason == "no_api_volume"
+        else:
+            assert auto[roi].graded_volume == api[roi].graded_volume == "api"
+            assert auto[roi].status == api[roi].status == Status.PASS
+            assert api[roi].effective_tolerance_pct == pytest.approx(1.0)
+
+    with pytest.raises(ValueError, match="volume_source"):
+        verify_volumes(path, planar_fixture, half, volume_source="best")
+    plain = _csv(tmp_path / "plain.csv", ["roi", "volume_cc"], [["cube", 216.0]])
+    with pytest.raises(ValueError, match="_api column"):
+        verify_volumes(plain, planar_fixture, half, volume_source="api")
+
+
 def test_cli_volume_mode_exit_codes_and_json(planar_fixture, tmp_path, capsys):
     analytic = _analytic_cc(planar_fixture)
     good = _csv(tmp_path / "g.csv", ["roi", "volume_cc"], [[k, repr(v)] for k, v in analytic.items()])
@@ -465,6 +506,12 @@ def test_cli_volume_mode_exit_codes_and_json(planar_fixture, tmp_path, capsys):
     assert cli_main(["verify", "--fixture", str(planar_fixture)]) == 2
     assert cli_main(["verify", "--predictions", str(tmp_path), "--fixture", str(planar_fixture),
                      "--volume-tolerance", "0.02"]) == 2
+    assert cli_main(["verify", "--volumes", str(good), "--fixture", str(planar_fixture),
+                     "--config", str(claims), "--volume-source", "displayed"]) == 0
+    assert cli_main(["verify", "--volumes", str(good), "--fixture", str(planar_fixture),
+                     "--volume-source", "api"]) == 2  # no API column
+    assert cli_main(["verify", "--predictions", str(tmp_path), "--fixture", str(planar_fixture),
+                     "--volume-source", "api"]) == 2
     assert cli_main(["verify", "--volumes", str(tmp_path / "nope.csv"),
                      "--fixture", str(planar_fixture)]) == 2
 

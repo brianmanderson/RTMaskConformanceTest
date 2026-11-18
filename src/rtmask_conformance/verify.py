@@ -679,6 +679,7 @@ def verify_volumes(
     *,
     bundles: list[str] | None = None,
     tolerance: float | None = None,
+    volume_source: str = "auto",
 ):
     """Volume-only mode: grade reported structure volumes, not masks.
 
@@ -687,7 +688,10 @@ def verify_volumes(
     """
     from .volume_only import verify_volumes as _verify_volumes
 
-    return _verify_volumes(volumes_csv, fixture_dir, config, bundles=bundles, tolerance=tolerance)
+    return _verify_volumes(
+        volumes_csv, fixture_dir, config,
+        bundles=bundles, tolerance=tolerance, volume_source=volume_source,
+    )
 
 
 def fixture_targets(

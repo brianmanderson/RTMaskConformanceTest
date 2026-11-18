@@ -271,7 +271,8 @@ RTSTRUCTs onto its `refct/` series, copy each structure's displayed volume into 
 `volumes_template.csv` that `generate` writes into the fixture (`roi,volume_cc`, or a
 `volume_mm3` column; optional `volume_decimals`, `import_outcome` (`accepted`, `warned`,
 `rejected`, `rejected_file`) and `message`; other columns are ignored), and run the command
-below. An ROI passes when its relative volume error is within 1 % (`volume_only.tolerance`
+below. A full-precision `<system>_volume_cc_api` column, where filled, is graded instead of the
+displayed volume (`--volume-source auto`, the default; `displayed` or `api` picks one). An ROI passes when its relative volume error is within 1 % (`volume_only.tolerance`
 in the YAML, or `--volume-tolerance`), widened to half a unit in the last displayed decimal
 when `volume_decimals` says the display cannot resolve 1 % (the result is then marked
 `display_limited`). A rejected ROI is `MISSING`, or `UNSUPPORTED_TYPE` if its contour type is

@@ -179,7 +179,8 @@ def render_volume_text(report) -> str:
         f"rtmask-conformance verify --volumes  config={report.config_source}  "
         f"{s['passed']}/{s['total']} passed  (volume only)",
         f"  input {st['input']}  column={st['volume_column']}  "
-        f"end_cap={st['end_cap']}  tolerance={100.0 * st['tolerance']:.2f} %",
+        f"end_cap={st['end_cap']}  tolerance={100.0 * st['tolerance']:.2f} %  "
+        f"volume_source={st['volume_source']}",
     ]
     for key, label in (("failed", "FAILED"), ("missing", "MISSING"),
                        ("unsupported_type", "UNSUPPORTED_TYPE"), ("report_only", "REPORT_ONLY")):

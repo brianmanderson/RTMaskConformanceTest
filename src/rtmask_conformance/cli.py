@@ -93,6 +93,15 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FRACTION",
         help="Relative volume tolerance for --volumes (default 0.01, or volume_only.tolerance).",
     )
+    v.add_argument(
+        "--volume-source",
+        choices=("auto", "displayed", "api"),
+        default=None,
+        help=(
+            "Which volume --volumes grades: auto (default; the <system>_volume_cc_api value "
+            "where a row has one, else the displayed volume), displayed, or api."
+        ),
+    )
     truth = v.add_mutually_exclusive_group(required=True)
     truth.add_argument(
         "--fixture",
@@ -176,12 +185,16 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     if args.volume_tolerance is not None and args.volumes is None:
         print("error: --volume-tolerance requires --volumes", file=sys.stderr)
         return 2
+    if args.volume_source is not None and args.volumes is None:
+        print("error: --volume-source requires --volumes", file=sys.stderr)
+        return 2
 
     try:
         if args.volumes is not None:
             report = verify_volumes(
                 args.volumes, args.fixture, config,
                 bundles=args.bundle, tolerance=args.volume_tolerance,
+                volume_source=args.volume_source or "auto",
             )
         elif args.fixture is not None:
             report = verify_fixture(

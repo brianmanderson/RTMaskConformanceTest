@@ -21,9 +21,12 @@ listed here is ignored.
     exactly one column named ``<system>_volume_cc`` or ``<system>_volume_mm3``
     is used instead (a console import record, e.g. ``raystation_volume_cc``).
 ``<system>_volume_cc_api`` / ``<system>_volume_mm3_api`` (optional)
-    A full-precision volume read through the system's scripting interface.
-    Where a row has one, it is graded instead of the displayed volume, at the
-    tolerance alone, and the result says ``graded_volume: "api"``.
+    A full-precision volume read through the system's scripting interface,
+    graded at the tolerance alone. Which volume is graded is set by
+    ``volume_source`` (``--volume-source``): ``auto`` (default) grades the API
+    volume where a row has one and the displayed volume otherwise;
+    ``displayed`` ignores the API column; ``api`` grades only API volumes (a
+    row without one has no volume). Each result says ``graded_volume``.
 ``volume_decimals`` (optional)
     How many decimals the system displayed. Sets the display quantisation below.
 ``import_outcome`` (optional)
@@ -99,6 +102,9 @@ NO_VOLUME_TYPES: frozenset[str] = frozenset({"POINT", "OPEN_PLANAR", "OPEN_NONPL
 _CLOSED_TYPES: frozenset[str] = frozenset({"CLOSED_PLANAR", "CLOSEDPLANAR_XOR"})
 
 _UNIT_TO_MM3: dict[str, float] = {"cc": 1000.0, "mm3": 1.0}
+
+#: Which reported volume to grade (``--volume-source``); the first is the default.
+VOLUME_SOURCES: tuple[str, ...] = ("auto", "displayed", "api")
 
 #: Columns of the blank template written into every fixture.
 TEMPLATE_COLUMNS: tuple[str, ...] = (
@@ -477,6 +483,7 @@ def grade_rows(
     *,
     tolerance: float | None = None,
     slice_spacing_mm: float = 1.0,
+    volume_source: str = "auto",
 ) -> tuple[list[VolumeResult], list[str]]:
     """Grade every target ROI against the table (no I/O). Returns ``(results, unmatched)``."""
     from .verify import Status
@@ -505,9 +512,11 @@ def grade_rows(
             res.absent_reason = "no_row"
         elif row.import_outcome in NOT_IMPORTED:
             res.absent_reason = row.import_outcome
-        elif row.api_volume is not None:
+        elif row.api_volume is not None and volume_source != "displayed":
             res.graded_volume = "api"
             reported_mm3 = row.api_volume * _UNIT_TO_MM3[table.api_unit]
+        elif volume_source == "api":
+            res.absent_reason = "no_api_volume"
         elif row.volume is not None:
             res.graded_volume = "displayed"
             reported_mm3 = row.volume * _UNIT_TO_MM3[table.unit]
@@ -547,6 +556,7 @@ def grade_rows(
                 "rejected": "import_outcome rejected: the ROI is not in the system",
                 "rejected_file": "import_outcome rejected_file: the RTSTRUCT was refused",
                 "no_volume": "no volume reported",
+                "no_api_volume": "no API volume reported (--volume-source api)",
             }[res.absent_reason])
             continue
 
@@ -640,6 +650,7 @@ def verify_volumes(
     *,
     bundles: list[str] | None = None,
     tolerance: float | None = None,
+    volume_source: str = "auto",
 ) -> VolumeOnlyReport:
     """Grade the volumes in ``volumes_csv`` against the fixture at ``fixture_dir``."""
     from .verify import _select_bundles, fixture_summary, summarize
@@ -659,9 +670,14 @@ def verify_volumes(
     selected = _select_bundles(manifest, bundles)
     targets = fixture_volume_targets(root, manifest, selected)
     table = read_volumes_csv(csv_path)
+    if volume_source not in VOLUME_SOURCES:
+        raise ValueError(f"volume_source {volume_source!r} not one of {list(VOLUME_SOURCES)}")
+    if volume_source == "api" and table.api_column is None:
+        raise ValueError(f"{csv_path}: --volume-source api needs a <system>_volume_cc_api column")
     spacing_z = float(manifest.geometry["spacing"][2])
     results, unmatched = grade_rows(
-        table, targets, config, tolerance=tol, slice_spacing_mm=spacing_z
+        table, targets, config, tolerance=tol, slice_spacing_mm=spacing_z,
+        volume_source=volume_source,
     )
     return VolumeOnlyReport(
         config_source=config.config_source,
@@ -675,6 +691,7 @@ def verify_volumes(
             "volume_column": table.volume_column,
             "unit": table.unit,
             "api_column": table.api_column,
+            "volume_source": volume_source,
             "tolerance": tol,
             "end_cap": config.end_cap,
             "slice_spacing_mm": spacing_z,
