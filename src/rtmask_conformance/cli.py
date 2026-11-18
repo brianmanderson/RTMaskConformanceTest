@@ -4,6 +4,9 @@ Exit codes:
     0   no ROI failed: every ROI is PASS, UNSUPPORTED_TYPE or REPORT_ONLY
         (or generate succeeded)
     1   any FAIL / MISSING / GEOMETRY_MISMATCH (verify only)
+
+``verify --volumes <csv> --fixture <dir>`` grades the structure volumes a
+planning system reports instead of masks (volume-only mode; same exit codes).
     2   usage / IO error, a malformed --config, or fixture ground truth that
         fails its manifest hash check
 """
@@ -19,7 +22,7 @@ from .generate import GenerateOptions, generate_fixture
 from .manifest import read_manifest
 from .report import print_report, write_json
 from .thresholds import load_config
-from .verify import Report, verify_fixture, verify_predictions
+from .verify import verify_fixture, verify_predictions, verify_volumes
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -68,9 +71,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     v.add_argument(
         "--predictions",
-        required=True,
         type=Path,
+        default=None,
         help="Directory containing <roi>.nii.gz files produced by your tool.",
+    )
+    v.add_argument(
+        "--volumes",
+        type=Path,
+        default=None,
+        metavar="CSV",
+        help=(
+            "Volume-only mode, instead of --predictions (requires --fixture): a CSV of the "
+            "structure volumes your system reports (roi,volume_cc; see the fixture's "
+            "volumes_template.csv). Only volume is graded."
+        ),
+    )
+    v.add_argument(
+        "--volume-tolerance",
+        type=float,
+        default=None,
+        metavar="FRACTION",
+        help="Relative volume tolerance for --volumes (default 0.01, or volume_only.tolerance).",
     )
     truth = v.add_mutually_exclusive_group(required=True)
     truth.add_argument(
@@ -146,10 +167,24 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     if args.bundle and args.fixture is None:
         print("error: --bundle requires --fixture", file=sys.stderr)
         return 2
+    if (args.predictions is None) == (args.volumes is None):
+        print("error: pass exactly one of --predictions and --volumes", file=sys.stderr)
+        return 2
+    if args.volumes is not None and args.fixture is None:
+        print("error: --volumes requires --fixture", file=sys.stderr)
+        return 2
+    if args.volume_tolerance is not None and args.volumes is None:
+        print("error: --volume-tolerance requires --volumes", file=sys.stderr)
+        return 2
 
     try:
-        if args.fixture is not None:
-            report: Report = verify_fixture(
+        if args.volumes is not None:
+            report = verify_volumes(
+                args.volumes, args.fixture, config,
+                bundles=args.bundle, tolerance=args.volume_tolerance,
+            )
+        elif args.fixture is not None:
+            report = verify_fixture(
                 predictions_dir=args.predictions,
                 fixture_dir=args.fixture,
                 config=config,

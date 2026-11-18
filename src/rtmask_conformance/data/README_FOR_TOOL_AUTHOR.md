@@ -75,3 +75,13 @@ default thresholds.
   shouldn't be a factor.
 - Ground-truth masks are binarized at the 0.5 partial-volume level (8³
   sub-voxel samples per voxel).
+
+## Systems without mask export
+
+A planning system that imports RTSTRUCTs but cannot write masks can still be graded on the
+structure volumes it reports. Import `rtstruct/primitives_<bundle>.dcm` onto `refct/`, fill
+`volumes_template.csv` in this directory with each structure's displayed volume in cc (and
+the number of decimals shown, and the import outcome), and run
+`rtmask-conformance verify --volumes volumes_template.csv --fixture .`. Declare under
+`claims:` whether your system ends a structure at its end contours (`end_cap: none`, the
+default) or half a slice beyond them (`end_cap: half_slice`). Only volume is graded.

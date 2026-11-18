@@ -16,6 +16,8 @@ expects:
                                           passing mask, not truth, never scored against
       specs/<roi>.json                    analytic spec metadata + bundle fields
       manifest.json                       bundles, ROIs, sha256s, generator settings
+      volumes_template.csv                blank input for ``verify --volumes``: one
+                                          row per ROI, volume cells empty
       README_FOR_TOOL_AUTHOR.md           drop-in instructions for converters
 """
 
@@ -48,6 +50,7 @@ from .manifest import (
     package_git_sha,
     write_manifest,
 )
+from .volume_only import write_volumes_template
 
 PV_THRESHOLD: float = 0.5
 
@@ -171,6 +174,7 @@ def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None
         refct_dir="refct",
     )
     write_manifest(manifest, out)
+    write_volumes_template(out, manifest)
 
     readme_src = Path(str(files("rtmask_conformance").joinpath("data/README_FOR_TOOL_AUTHOR.md")))
     shutil.copyfile(readme_src, out / "README_FOR_TOOL_AUTHOR.md")

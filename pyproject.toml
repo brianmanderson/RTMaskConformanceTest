@@ -52,7 +52,7 @@ Issues = "https://github.com/brianmanderson/RTMaskConformanceTest/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-rtmask_conformance = ["data/*.yaml", "data/*.md"]
+rtmask_conformance = ["data/*.yaml", "data/*.md", "data/*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/rtmask_conformance/tests"]

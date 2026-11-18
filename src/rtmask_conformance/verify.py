@@ -8,6 +8,8 @@ Public surface:
   preferred entry point.
 * :func:`verify_predictions` — the v0.1 path: score every ROI in
   ``CONFORMANCE_ROIS`` against a bare ground-truth directory, no manifest.
+* :func:`verify_volumes` — volume-only mode: grade a CSV of structure volumes a
+  planning system reports, for systems that export no masks.
 * :func:`check_fixture_integrity` — the hash check on its own.
 * :func:`evaluate_one` — score a single ROI; the pytest harness calls this
   per parametrized test.
@@ -668,6 +670,24 @@ def verify_fixture(
 
 #: Truth kinds :func:`evaluate_one` can grade.
 SCORABLE_TRUTH_KINDS: tuple[str, ...] = ("binary_mask", *pointline.POINTLINE_TRUTH_KINDS)
+
+
+def verify_volumes(
+    volumes_csv: str | Path,
+    fixture_dir: str | Path,
+    config: ConformanceConfig | None = None,
+    *,
+    bundles: list[str] | None = None,
+    tolerance: float | None = None,
+):
+    """Volume-only mode: grade reported structure volumes, not masks.
+
+    For systems that export no masks; see :mod:`rtmask_conformance.volume_only`.
+    Returns a :class:`~rtmask_conformance.volume_only.VolumeOnlyReport`.
+    """
+    from .volume_only import verify_volumes as _verify_volumes
+
+    return _verify_volumes(volumes_csv, fixture_dir, config, bundles=bundles, tolerance=tolerance)
 
 
 def fixture_targets(
