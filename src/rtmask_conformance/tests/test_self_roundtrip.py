@@ -24,6 +24,7 @@ import datetime
 import gzip
 import hashlib
 import importlib.util
+import io
 import json
 import lzma
 import os
@@ -494,9 +495,66 @@ def v01_reference(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out
 
 
+PLANAR_RTSTRUCT = "rtstruct/primitives_planar.dcm"
+
+#: The two attributes the interpreted-types pass adds after the RTSTRUCT is written:
+#: ROI Description (3006,0028) and RT ROI Interpreted Type (3006,00A4).
+LABEL_TAGS: frozenset[tuple[int, int]] = frozenset({(0x3006, 0x0028), (0x3006, 0x00A4)})
+
+
+def _strip_labels(ds: pydicom.Dataset) -> pydicom.Dataset:
+    """Return the dataset as the writer left it: no ROI Description, empty Interpreted Type."""
+    for item in ds.StructureSetROISequence:
+        if "ROIDescription" in item:
+            del item.ROIDescription
+    for obs in ds.RTROIObservationsSequence:
+        obs.RTROIInterpretedType = ""
+    return ds
+
+
+def _stripped_sha256(path: Path) -> str:
+    """SHA-256 of the RTSTRUCT at ``path`` re-saved without the two label attributes."""
+    buffer = io.BytesIO()
+    _strip_labels(pydicom.dcmread(path)).save_as(buffer, enforce_file_format=True)
+    return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+
+def _leaf_elements(ds: pydicom.Dataset, prefix: str = "") -> dict[str, tuple[tuple[int, int], object]]:
+    out: dict[str, tuple[tuple[int, int], object]] = {}
+    for elem in ds:
+        path = f"{prefix}({elem.tag.group:04X},{elem.tag.element:04X})"
+        if elem.VR == "SQ":
+            for i, item in enumerate(elem.value):
+                out.update(_leaf_elements(item, f"{path}[{i}]/"))
+        else:
+            out[path] = ((elem.tag.group, elem.tag.element), elem.value)
+    return out
+
+
+def _planar_v01_hashes(fixture: Path) -> dict[str, str]:
+    """The planar files' SHA-256, the RTSTRUCT taken without the two label attributes."""
+    return {
+        rel: _stripped_sha256(fixture / rel) if rel == PLANAR_RTSTRUCT else _sha256(fixture / rel)
+        for rel in V01_PLANAR_FILES
+    }
+
+
+def _assert_only_labels_differ(path: Path) -> None:
+    """The labelled RTSTRUCT differs from its stripped form in the two label attributes only."""
+    a = _leaf_elements(pydicom.dcmread(path))
+    b = _leaf_elements(_strip_labels(pydicom.dcmread(path)))
+    changed = {k for k in a.keys() | b.keys() if a.get(k) != b.get(k)}
+    assert changed, f"{path.name} carries no ROI labels"
+    tags = {(a.get(k) or b.get(k))[0] for k in changed}
+    assert tags == LABEL_TAGS, sorted(changed)
+
+
 def test_planar_bundle_byte_identical_to_v01(v02_fixture: Path, v01_reference: Path) -> None:
+    # The interpreted-types pass adds (3006,0028) and (3006,00A4) to the planar
+    # RTSTRUCT and nothing else; with them stripped, its bytes are v0.1's.
+    _assert_only_labels_differ(v02_fixture / PLANAR_RTSTRUCT)
     expected = {rel: _sha256(v01_reference / rel) for rel in V01_PLANAR_FILES}
-    actual = {rel: _sha256(v02_fixture / rel) for rel in V01_PLANAR_FILES}
+    actual = _planar_v01_hashes(v02_fixture)
     assert actual == expected
     assert sorted(p.name for p in (v02_fixture / "rtstruct").iterdir()) == sorted(
         f"primitives_{bundle}.dcm" for bundle in BUNDLES
@@ -511,7 +569,8 @@ def test_planar_bundle_matches_pinned_v01_hashes(v02_fixture: Path) -> None:
     pinned = V01_PLANAR_SHA256_BY_PLATFORM.get(sys.platform)
     if pinned is None:
         pytest.skip(f"no pinned v0.1 hashes for platform {sys.platform!r}")
-    actual = {rel: _sha256(v02_fixture / rel) for rel in pinned}
+    _assert_only_labels_differ(v02_fixture / PLANAR_RTSTRUCT)
+    actual = _planar_v01_hashes(v02_fixture)  # RTSTRUCT without the two label attributes
     assert actual == pinned, (
         "planar fixture bytes differ from the pinned v0.1 hashes for this platform; "
         "if test_planar_bundle_byte_identical_to_v01 passes, a dependency (numpy, "
