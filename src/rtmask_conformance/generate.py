@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib.resources import files
 from pathlib import Path
 
@@ -42,6 +42,7 @@ from .grading_pointline import (
     reference_rasterisation,
     write_truth,
 )
+from .interpreted_types import apply_interpreted_types, label_for
 from .manifest import (
     MANIFEST_VERSION,
     BundleEntry,
@@ -103,6 +104,7 @@ def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None
             out_path=rtss_path,
             structure_set_label="RTMASK_CONFORM",
         )
+        apply_interpreted_types(rtss_path)
         bundle_entries[bundle] = BundleEntry(
             rtstruct_path=rtss_rel,
             rtstruct_sha256=sha256_file(rtss_path),
@@ -154,6 +156,7 @@ def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None
                 spec_path=spec_rel,
                 expected_prediction=f"{roi.name}.nii.gz" if roi.graded else None,
                 reference_mask_path=reference_rel,
+                **asdict(label_for(roi.name)),
             )
 
     manifest = FixtureManifest(

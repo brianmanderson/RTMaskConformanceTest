@@ -84,6 +84,7 @@ def test_manifest_v2_json_layout(tmp_path: Path) -> None:
     assert set(raw["rois"]["sphere"]) == {
         "bundle", "geometric_type", "truth_kind", "graded", "truth_path", "truth_sha256",
         "spec_path", "expected_prediction", "reference_mask_path",
+        "interpreted_type", "description",
     }
 
 
