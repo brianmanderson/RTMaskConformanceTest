@@ -164,6 +164,25 @@ ceilings carry a 1.5× margin over the worst value of the thin-path rasterisers 
 calibrated against; each `OPEN_PLANAR` ceiling is twice the error of an ideal one-voxel-wide
 rasterisation at 1 mm.
 
+### ROI classes and descriptions
+
+Every ROI in every RTSTRUCT carries an RT ROI Interpreted Type (3006,00A4), one of the
+Defined Terms of DICOM PS3.3 C.8.8.8, and a TG-263-style ROI Description (3006,0028) of 16
+characters or fewer (e.g. `PTV_Cube60`, `Brachy_Helix`), so a reader that branches on the
+ROI class meets each class the suite ships. The classes say which clinical structure each
+primitive stands in for; they are illustrative, constrain no geometry, and are not graded.
+ROI names are unchanged. `manifest.json` records both values per ROI (`interpreted_type`,
+`description`); the mapping lives in `rtmask_conformance.interpreted_types`.
+
+| RT ROI Interpreted Type | ROIs |
+|---|---|
+| `ORGAN` | `sphere`, `cylinder`, `ellipsoid`, `hollow_sphere`, `straw`, and the four `_xor` / `_keyhole` twins of the last two |
+| `PTV` | `cube` |
+| `AVOIDANCE` | `torus` |
+| `MARKER` | `single_point_*`, `needle_track_*`, `line_segment_*`, `open_arc_*` |
+| `BRACHY_SRC_APP` | `ldr_seed_implant_*` |
+| `BRACHY_CHANNEL` | `diagonal_needle_*`, `helix_*`, `sinusoid_*`, `syed_bundle_*` |
+
 ### Metrics
 
 Each closed-planar ROI is scored on:

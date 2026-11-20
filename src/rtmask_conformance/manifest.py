@@ -27,7 +27,9 @@ Version 2 layout (all paths relative to the fixture directory)::
                   "truth_sha256": "..." | null,
                   "spec_path": "specs/<roi>.json",
                   "expected_prediction": "<roi>.nii.gz" | null,
-                  "reference_mask_path": "reference_masks/<roi>.nii.gz" | null}
+                  "reference_mask_path": "reference_masks/<roi>.nii.gz" | null,
+                  "interpreted_type": "ORGAN" | null,
+                  "description": "<TG-263-style label>" | null}
       }
     }
 
@@ -75,6 +77,10 @@ class RoiEntry:
     # An example of a passing mask (the suite's own rasterisation) for ROIs whose
     # truth is not a mask (curves, points). Never scored against; not truth.
     reference_mask_path: str | None = None
+    # RT ROI Interpreted Type (3006,00A4) and ROI Description (3006,0028) written
+    # into the RTSTRUCT (see interpreted_types); None in an upgraded v1 manifest.
+    interpreted_type: str | None = None
+    description: str | None = None
 
 
 @dataclass
