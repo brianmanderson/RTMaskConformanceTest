@@ -9,6 +9,11 @@ has one table per kind of ground truth: binary masks (Dice, surface metrics,
 volume), points and curves (their own metrics, distances in mm). The JSON report
 (``Report.as_dict``) carries ``version``, ``config_source``, ``fixture``,
 ``claims``, ``report_only``, ``summary`` and per-ROI ``results``.
+
+When the config declares a boundary convention (``claims.convention`` or
+``verify --convention``), the JSON ``claims`` block records it and the header
+line names it; a report that declares none is unchanged and was graded under
+``pv_ge_0.5``.
 """
 
 from __future__ import annotations
@@ -62,9 +67,11 @@ def render_text(report: Report) -> str:
     if getattr(report, "settings", None) is not None:  # volume-only report
         return render_volume_text(report)
     lines: list[str] = []
+    convention = (report.claims or {}).get("convention")
     lines.append(
         f"rtmask-conformance verify  config={report.config_source}  "
-        f"{report.summary['passed']}/{report.summary['total']} passed"
+        + (f"convention={convention}  " if convention else "")
+        + f"{report.summary['passed']}/{report.summary['total']} passed"
     )
     if report.summary.get("missing"):
         lines.append(f"  {_color('MISSING', '33')}: {report.summary['missing']}")

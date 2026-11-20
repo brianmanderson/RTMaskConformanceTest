@@ -7,7 +7,14 @@ expects:
       refct/                              200 DICOM CT slices
       rtstruct/primitives_<bundle>.dcm    one RTSTRUCT per populated bundle
       groundtruth/<roi>.nii.gz            binary masks (uint8, PV >= 0.5) for
-                                          every ROI whose truth_kind is binary_mask
+                                          every ROI whose truth_kind is binary_mask:
+                                          the reference of the default convention
+                                          ``pv_ge_0.5``
+      groundtruth_pv/<roi>.nii.gz         the partial-volume field itself (float32,
+                                          fraction of each voxel inside the solid)
+      groundtruth_pv_gt0/<roi>.nii.gz     uint8, PV > 0: the ``pv_gt_0`` reference
+      groundtruth_centre_in/<roi>.nii.gz  uint8, voxel centre inside the solid: the
+                                          ``centre_in`` reference
       groundtruth_curves/<roi>.json       analytic truth of each curve ROI: densified
                                           polylines, endpoints, analytic arc length
       groundtruth_points/<roi>.json       analytic truth of each point ROI
@@ -32,9 +39,14 @@ from pathlib import Path
 from . import __version__
 from ._roi_set import BUNDLES
 from ._vendor.common.io import sha256_file, write_nifti
-from ._vendor.groundtruth.partial_volume import binary_threshold, partial_volume_mask
+from ._vendor.groundtruth.partial_volume import (
+    any_overlap_mask,
+    binary_threshold,
+    partial_volume_mask,
+)
 from ._vendor.refimage.build_reference_ct import ReferenceCTSpec, build_reference_ct
 from ._vendor.rtstruct.pydicom_writer import build_rtstruct
+from .centre_in import centre_in_mask
 from .grading_pointline import (
     POINTLINE_TRUTH_KINDS,
     TRUTH_DIRS,
@@ -50,12 +62,23 @@ from .manifest import (
     package_git_sha,
     write_manifest,
 )
+from .thresholds import DEFAULT_CONVENTION
 from .volume_only import write_volumes_template
 
 PV_THRESHOLD: float = 0.5
 
 #: Fixture directory of the reference masks of curve and point ROIs.
 REFERENCE_MASKS_DIR: str = "reference_masks"
+
+#: Fixture directory of the float partial-volume field of each binary-mask ROI.
+PV_FIELD_DIR: str = "groundtruth_pv"
+
+#: Fixture directory of each boundary convention's binary reference.
+CONVENTION_DIRS: dict[str, str] = {
+    DEFAULT_CONVENTION: "groundtruth",
+    "pv_gt_0": "groundtruth_pv_gt0",
+    "centre_in": "groundtruth_centre_in",
+}
 
 
 @dataclass(frozen=True)
@@ -68,6 +91,11 @@ class GenerateOptions:
 def rtstruct_relpath(bundle: str) -> str:
     """Fixture-relative path of a bundle's RTSTRUCT."""
     return f"rtstruct/primitives_{bundle}.dcm"
+
+
+def _write_mask(array, geometry, out: Path, rel: str) -> dict[str, str]:
+    write_nifti(array, geometry, out / rel)
+    return {"path": rel, "sha256": sha256_file(out / rel)}
 
 
 def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None) -> Path:
@@ -113,14 +141,35 @@ def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None
             truth_rel: str | None = None
             truth_sha: str | None = None
             reference_rel: str | None = None
+            pv_field: dict[str, str] | None = None
+            convention_truths: dict[str, dict[str, str]] | None = None
             if roi.truth_kind == "binary_mask":
+                # One partial-volume field per ROI; the pv_ge_0.5 and pv_gt_0
+                # references are its two binarisations, centre_in is the direct
+                # inside test at the voxel centres.
                 fractions = partial_volume_mask(
                     roi.primitive, geometry, n_quadrature=options.n_quadrature
                 )
-                binary = binary_threshold(fractions, threshold=PV_THRESHOLD)
-                truth_rel = f"groundtruth/{roi.name}.nii.gz"
-                write_nifti(binary, geometry, out / truth_rel)
-                truth_sha = sha256_file(out / truth_rel)
+                name = f"{roi.name}.nii.gz"
+                convention_truths = {
+                    DEFAULT_CONVENTION: _write_mask(
+                        binary_threshold(fractions, threshold=PV_THRESHOLD), geometry, out,
+                        f"{CONVENTION_DIRS[DEFAULT_CONVENTION]}/{name}",
+                    ),
+                    "pv_gt_0": _write_mask(
+                        any_overlap_mask(fractions), geometry, out,
+                        f"{CONVENTION_DIRS['pv_gt_0']}/{name}",
+                    ),
+                    "centre_in": _write_mask(
+                        centre_in_mask(roi.primitive, geometry), geometry, out,
+                        f"{CONVENTION_DIRS['centre_in']}/{name}",
+                    ),
+                }
+                pv_field = _write_mask(
+                    fractions.astype("float32"), geometry, out, f"{PV_FIELD_DIR}/{name}"
+                )
+                truth_rel = convention_truths[DEFAULT_CONVENTION]["path"]
+                truth_sha = convention_truths[DEFAULT_CONVENTION]["sha256"]
             elif roi.truth_kind in POINTLINE_TRUTH_KINDS:
                 truth = build_truth(roi.primitive, roi.truth_kind, geometry)
                 truth_rel = f"{TRUTH_DIRS[roi.truth_kind]}/{roi.name}.json"
@@ -154,6 +203,8 @@ def generate_fixture(out_dir: str | Path, options: GenerateOptions | None = None
                 spec_path=spec_rel,
                 expected_prediction=f"{roi.name}.nii.gz" if roi.graded else None,
                 reference_mask_path=reference_rel,
+                pv_field=pv_field,
+                convention_truths=convention_truths,
             )
 
     manifest = FixtureManifest(

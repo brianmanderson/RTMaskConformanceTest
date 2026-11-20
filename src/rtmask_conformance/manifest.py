@@ -27,9 +27,19 @@ Version 2 layout (all paths relative to the fixture directory)::
                   "truth_sha256": "..." | null,
                   "spec_path": "specs/<roi>.json",
                   "expected_prediction": "<roi>.nii.gz" | null,
-                  "reference_mask_path": "reference_masks/<roi>.nii.gz" | null}
+                  "reference_mask_path": "reference_masks/<roi>.nii.gz" | null,
+                  "pv_field": {"path": "groundtruth_pv/<roi>.nii.gz",
+                               "sha256": "..."} | null,
+                  "convention_truths": {"pv_ge_0.5": {"path": ..., "sha256": ...},
+                                        "pv_gt_0": {...}, "centre_in": {...}} | null}
       }
     }
+
+``convention_truths`` holds the binary reference of each boundary convention a
+binary-mask ROI can be graded under; its ``pv_ge_0.5`` entry repeats
+``truth_path`` and ``truth_sha256``. ``pv_field`` is the float partial-volume
+field both PV binarisations come from. Both are null for curve and point ROIs
+and absent from fixtures written before they existed (read as null).
 
 ``bundles`` and ``rois`` keep canonical order. :func:`read_manifest` still
 accepts a version-1 manifest (one RTSTRUCT, a flat ROI list) and upgrades it
@@ -75,6 +85,26 @@ class RoiEntry:
     # An example of a passing mask (the suite's own rasterisation) for ROIs whose
     # truth is not a mask (curves, points). Never scored against; not truth.
     reference_mask_path: str | None = None
+    # The float partial-volume field ({"path", "sha256"}) of a binary-mask ROI.
+    pv_field: dict[str, str] | None = None
+    # Boundary convention -> its binary reference ({"path", "sha256"}).
+    convention_truths: dict[str, dict[str, str]] | None = None
+
+    def truth_for(self, convention: str) -> tuple[str | None, str | None]:
+        """``(path, sha256)`` of this ROI's reference under ``convention``.
+
+        The default convention's reference is ``truth_path``. Another
+        convention's is read from ``convention_truths``; ``(None, None)`` when
+        the fixture records none (a curve or point ROI, or an older fixture).
+        """
+        from .thresholds import DEFAULT_CONVENTION
+
+        if convention == DEFAULT_CONVENTION:
+            return self.truth_path, self.truth_sha256
+        entry = (self.convention_truths or {}).get(convention)
+        if entry is None:
+            return None, None
+        return entry["path"], entry["sha256"]
 
 
 @dataclass

@@ -24,8 +24,13 @@ sub-block per ROI name; the metrics a sub-block names are the ones graded::
         curve_max_distance_mm: 1.5
 
 A user YAML's ``pointline.<roi>`` block shallow-merges over the shipped one.
+The block is loaded and validated with every other threshold block by
+:func:`rtmask_conformance.thresholds.load_config`
+(:attr:`~rtmask_conformance.thresholds.ConformanceConfig.pointline`).
 ``point_recall`` and ``curve_coverage_recall`` are higher-is-better; every
-other metric is lower-is-better.
+other metric is lower-is-better. Curve and point ROIs have no boundary
+convention: ``claims.convention`` and ``verify --convention`` do not change
+how they are graded.
 
 Status rules (the order of :mod:`rtmask_conformance.verify` applies around
 them): an unclaimed type with no prediction, or with an all-zero one, is
@@ -36,12 +41,10 @@ metric beyond its threshold is ``FAIL``; otherwise ``PASS``.
 from __future__ import annotations
 
 import json
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
 from ._vendor.common.coords import Geometry
 from ._vendor.metrics import (
@@ -51,6 +54,12 @@ from ._vendor.metrics import (
     point_metrics,
 )
 from ._vendor.primitives.base import AnalyticalPrimitive
+from .thresholds import (
+    CURVE_METRIC_KEYS,
+    POINT_METRIC_KEYS,
+    load_config,
+    pointline_thresholds_for,
+)
 
 #: Truth kinds this module grades.
 POINTLINE_TRUTH_KINDS: tuple[str, ...] = ("points", "curve")
@@ -62,23 +71,8 @@ TRUTH_DIRS: dict[str, str] = {"points": "groundtruth_points", "curve": "groundtr
 #: curve; the upstream harness uses the same value.
 DENSIFY_MAX_STEP_MM: float = 0.3
 
-#: Metrics reported (and gradable) for a point set, in report order.
-POINT_METRIC_KEYS: tuple[str, ...] = (
-    "point_recall",
-    "point_fp_rate",
-    "point_mean_displacement_mm",
-    "point_max_displacement_mm",
-)
-
-#: Metrics reported (and gradable) for a curve, in report order.
-CURVE_METRIC_KEYS: tuple[str, ...] = (
-    "curve_coverage_recall",
-    "curve_mean_distance_mm",
-    "curve_max_distance_mm",
-    "curve_voxel_to_curve_mean_mm",
-    "arc_length_error_pct",
-)
-
+#: Metrics reported (and gradable) per truth kind, in report order. The key
+#: tuples are defined in thresholds.py, which validates the ``pointline:`` block.
 METRIC_KEYS_BY_KIND: dict[str, tuple[str, ...]] = {
     "points": POINT_METRIC_KEYS,
     "curve": CURVE_METRIC_KEYS,
@@ -332,67 +326,25 @@ def violations(metrics: dict[str, Any], thresholds: dict[str, float]) -> list[st
 
 
 # -----------------------------------------------------------------
-#  Thresholds: the top-level ``pointline:`` YAML block
+#  Thresholds: the top-level ``pointline:`` YAML block (thresholds.py)
 # -----------------------------------------------------------------
-
-_ALL_KEYS: frozenset[str] = frozenset(POINT_METRIC_KEYS + CURVE_METRIC_KEYS)
-
-
-def _validate_block(block: Any, context: str) -> dict[str, dict[str, float]]:
-    if block is None:
-        return {}
-    if not isinstance(block, dict):
-        raise ValueError(f"{context}: expected a mapping of ROI name -> metrics")
-    out: dict[str, dict[str, float]] = {}
-    for roi, metrics in block.items():
-        if not isinstance(metrics, dict):
-            raise ValueError(f"{context}.{roi}: expected a mapping of metric -> threshold")
-        out[roi] = {}
-        for k, v in metrics.items():
-            if k not in _ALL_KEYS:
-                raise ValueError(
-                    f"{context}.{roi}: unknown metric {k!r}. Allowed: {sorted(_ALL_KEYS)}"
-                )
-            if not isinstance(v, (int, float)) or isinstance(v, bool):
-                raise ValueError(f"{context}.{roi}.{k}: expected a number, got {type(v).__name__}")
-            out[roi][k] = float(v)
-    return out
-
-
-def _yaml_block(path: Path, context: str) -> dict[str, dict[str, float]]:
-    with path.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: top level must be a mapping")
-    return _validate_block(data.get("pointline"), context)
 
 
 def load_pointline_thresholds(config_source: str = "default") -> dict[str, dict[str, float]]:
     """The shipped ``pointline`` block, with a user YAML's merged over it per ROI.
 
     ``config_source`` is :attr:`ConformanceConfig.config_source`: ``"default"``
-    or the path of the user YAML.
+    or the path of the user YAML. Kept for callers that hold a path, not a
+    config; :func:`rtmask_conformance.thresholds.load_config` does the work.
     """
-    shipped = Path(str(files("rtmask_conformance").joinpath("data/default_thresholds.yaml")))
-    merged = _yaml_block(shipped, "shipped.pointline")
-    if config_source != "default":
-        for roi, block in _yaml_block(Path(config_source), "user.pointline").items():
-            merged.setdefault(roi, {}).update(block)
-    return merged
+    return load_config(None if config_source == "default" else config_source).pointline
 
 
 def thresholds_for(config_source: str, roi: str, truth_kind: str) -> dict[str, float]:
-    """The graded metrics and their thresholds for one curve or point ROI."""
-    block = load_pointline_thresholds(config_source).get(roi)
-    if block is None:
-        raise ValueError(
-            f"no thresholds for {truth_kind} ROI {roi!r}: add a `pointline: {{{roi}: ...}}` block"
-        )
-    allowed = set(METRIC_KEYS_BY_KIND[truth_kind])
-    wrong = sorted(set(block) - allowed)
-    if wrong:
-        raise ValueError(
-            f"pointline.{roi}: {wrong} do not apply to a {truth_kind} ROI. Allowed: {sorted(allowed)}"
-        )
-    # Report order, not YAML order.
-    return {k: block[k] for k in METRIC_KEYS_BY_KIND[truth_kind] if k in block}
+    """The graded metrics and their thresholds for one curve or point ROI.
+
+    See :func:`rtmask_conformance.thresholds.pointline_thresholds_for`, which
+    takes a loaded config.
+    """
+    config = load_config(None if config_source == "default" else config_source)
+    return pointline_thresholds_for(config, roi, truth_kind)

@@ -5,10 +5,16 @@ Exit codes:
         (or generate succeeded)
     1   any FAIL / MISSING / GEOMETRY_MISMATCH (verify only)
 
+    2   usage / IO error, a malformed --config, fixture ground truth that
+        fails its manifest hash check, or a fixture with no reference for the
+        declared convention
+
 ``verify --volumes <csv> --fixture <dir>`` grades the structure volumes a
 planning system reports instead of masks (volume-only mode; same exit codes).
-    2   usage / IO error, a malformed --config, or fixture ground truth that
-        fails its manifest hash check
+
+``verify --convention {pv_ge_0.5,pv_gt_0,centre_in}`` grades binary-mask ROIs
+against that boundary convention's reference, overriding the config's
+``claims.convention`` (default ``pv_ge_0.5``); it needs ``--fixture``.
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from . import __version__
 from .generate import GenerateOptions, generate_fixture
 from .manifest import read_manifest
 from .report import print_report, write_json
-from .thresholds import load_config
+from .thresholds import CONVENTIONS, DEFAULT_CONVENTION, load_config
 from .verify import verify_fixture, verify_predictions, verify_volumes
 
 
@@ -133,6 +139,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional YAML overriding default thresholds.",
     )
     v.add_argument(
+        "--convention",
+        choices=CONVENTIONS,
+        default=None,
+        help=(
+            "Boundary convention your tool rasterises by: pv_ge_0.5 (a voxel is in when at "
+            "least half of it is inside), pv_gt_0 (any part of it) or centre_in (its centre). "
+            "Binary-mask ROIs are graded against that convention's reference and thresholds. "
+            "Overrides claims.convention in --config; default pv_ge_0.5. Requires --fixture."
+        ),
+    )
+    v.add_argument(
         "--report-json",
         type=Path,
         default=None,
@@ -188,6 +205,19 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     if args.volume_source is not None and args.volumes is None:
         print("error: --volume-source requires --volumes", file=sys.stderr)
         return 2
+    if args.convention is not None and args.volumes is not None:
+        print("error: --convention does not apply to --volumes", file=sys.stderr)
+        return 2
+    if (
+        args.groundtruth is not None
+        and (args.convention or config.convention) != DEFAULT_CONVENTION
+    ):
+        print(
+            f"error: convention {args.convention or config.convention}: --groundtruth holds "
+            f"the {DEFAULT_CONVENTION} reference only; use --fixture",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         if args.volumes is not None:
@@ -202,6 +232,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
                 fixture_dir=args.fixture,
                 config=config,
                 bundles=args.bundle,
+                convention=args.convention,
             )
         else:
             report = verify_predictions(
