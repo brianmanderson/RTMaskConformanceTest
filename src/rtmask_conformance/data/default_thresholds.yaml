@@ -70,12 +70,72 @@ primitives:
     hd95_mm: 2.5
     volume_rel_err: 0.05
 
+# Boundary conventions. `defaults` and `primitives` above are the thresholds of the
+# default convention, pv_ge_0.5 (a voxel is in when at least half of it lies inside);
+# they do not change here. A tool that declares `claims.convention: pv_gt_0` (any part
+# of the voxel inside) or `centre_in` (the voxel centre inside) is graded against that
+# convention's reference, with the thresholds below: each block names only what
+# differs from pv_ge_0.5 and wins over it (`defaults` <- `primitives.<roi>` <-
+# `conventions.<c>.defaults` <- `conventions.<c>.primitives.<roi>`).
+#
+# Calibrated 2026-11-19 with tools/calibrate_conventions.py on a fixture at the
+# default quadrature (n_quadrature 8; the pv_gt_0 reference grows with it). Every
+# floor and ceiling starts at its pv_ge_0.5 value; only the volume ceiling is
+# calibrated. Positive calibrators: the suite's own rasterisations of the
+# fixture's RTSTRUCT, per slice: voxel centre inside the contour (centre_in), and
+# in-plane area fraction from 8 x 8 sub-pixels >= 0.5 (pv_ge_0.5) or > 0 (pv_gt_0).
+# Rule: where a convention's contour-based error exceeds two thirds of the start
+# value, the ceiling becomes 1.5 x that error, rounded up to 0.5 points; it is
+# never lowered. Volume errors (%) of the contour-based mask under its own
+# convention, then the smallest error of another convention's ideal 3-D mask
+# against the convention's reference (a ceiling below it keeps them apart):
+#
+#                  pv_gt_0 own / cross   centre_in own / cross   ceiling (pv_ge_0.5)
+#   sphere              1.87 / 4.92          0.07 / 0.02           3.0
+#   cube                0.00 / 0.00          0.00 / 0.00           3.0
+#   cylinder            0.27 / 4.07          0.57 / 0.28           3.0
+#   ellipsoid           1.20 / 4.50          0.17 / 0.02           3.0
+#   torus               3.44 / 6.27          0.17 / 0.34           3.0 -> 5.5 under pv_gt_0
+#   hollow_sphere       2.48 / 6.71          0.07 / 0.03           5.0
+#   straw               0.40 / 5.11          0.21 / 0.53           5.0
+#
+# - pv_gt_0: a per-slice any-overlap mask reads low against the 3-D one, because
+#   it cannot see where the solid bulges between slices; on the torus (highest
+#   surface-to-volume ratio) it reads 3.44 %, so its ceiling is 5.5 %. A pv_ge_0.5
+#   or centre_in mask still fails there (6.27 % and more). Every other ROI keeps
+#   its pv_ge_0.5 value, which already passes the per-slice mask and fails the
+#   other two conventions' masks (straw by the narrowest margin, 5.11 % vs 5.0 %).
+# - centre_in: every ceiling stays at its pv_ge_0.5 value (margin >= 2.4 points).
+#   A pv_ge_0.5 mask and a centre_in mask differ by at most 0.53 % in volume and
+#   pass each other's thresholds on every primitive: the gate does not tell these
+#   two conventions apart. On the cube, whose faces lie on voxel boundaries, the
+#   three references are identical.
+conventions:
+  pv_gt_0:
+    primitives:
+      torus:
+        volume_rel_err: 0.055
+  centre_in: {}
+
 # Curve and point ROIs (truth_kind `curve` or `points`; see grading_pointline.py).
 # Dice does not apply to a zero-volume ROI, so these are graded on their own
 # metrics, one sub-block per ROI name; the metrics a sub-block names are the ones
 # graded. A user YAML's `pointline.<roi>` block shallow-merges over these.
 # Recalls are floors; everything else is a ceiling. Values assume the fixture's
-# 1 mm isotropic grid.
+# 1 mm isotropic grid. Curve and point ROIs have no boundary convention: this
+# block applies under every `claims.convention`.
+#
+# Two calibration rules, one per kind of evidence:
+# - family rule: where positive calibrators exist beyond the suite's own
+#   rasteriser (POINT and OPEN_NONPLANAR, every metric), the ceiling is their
+#   worst value over the family x 1.5, rounded up, the same for every ROI of the
+#   family;
+# - per-ROI rule: where the suite's own ideal rasteriser is the only positive
+#   calibrator (OPEN_PLANAR arc length), the ceiling is 2 x its error on that ROI.
+# A metric of a ROI that both rules cover takes the tighter value, never the
+# looser one: OPEN_PLANAR arc length takes the per-ROI value (7.93 and 11.76
+# against the family's 16.0); OPEN_PLANAR curve distances, which have no per-ROI
+# calibration, take the family values.
 #
 # POINT and OPEN_NONPLANAR: calibrated 2026-11-10 with
 # tools/calibrate_pointline_thresholds.py from an upstream forward-benchmark run

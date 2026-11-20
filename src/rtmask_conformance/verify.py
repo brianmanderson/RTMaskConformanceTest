@@ -42,6 +42,17 @@ are scored on curve, arc-length and point metrics against the analytic truth
 JSON (:mod:`rtmask_conformance.grading_pointline`), with thresholds from the
 YAML's ``pointline:`` block, and their geometry check is against the grid
 recorded in the truth JSON.
+
+Boundary conventions. A binary-mask ROI is graded against the reference of the
+config's convention (``claims.convention``, or the ``convention`` argument of
+:func:`verify_fixture`; default ``pv_ge_0.5``) with that convention's
+thresholds (:mod:`rtmask_conformance.thresholds`). The fixture ships one
+reference per convention and the manifest records each with its SHA-256; a
+fixture without the declared convention's reference (written before
+conventions existed) is a setup error. A ``PASS`` means the mask conforms
+under the convention it was graded under. Curve and point ROIs are graded the
+same way under every convention. The bare ``--groundtruth`` path holds the
+``pv_ge_0.5`` reference only.
 """
 
 from __future__ import annotations
@@ -61,7 +72,14 @@ from ._roi_set import BUNDLES, CONFORMANCE_ROIS
 from ._vendor.common.io import sitk_image_to_geometry
 from ._vendor.metrics import all_surface_metrics, binary_dsc, volume_metrics
 from .manifest import FixtureManifest, read_manifest
-from .thresholds import ConformanceConfig, Thresholds, load_config
+from .thresholds import (
+    CONVENTION_CALIBRATION_N_QUADRATURE,
+    DEFAULT_CONVENTION,
+    ConformanceConfig,
+    Thresholds,
+    load_config,
+    pointline_thresholds_for,
+)
 
 #: Version of the JSON report layout (``Report.as_dict()["version"]``).
 #: 2.0 adds the ``fixture``, ``claims`` and ``report_only`` blocks, the
@@ -347,7 +365,7 @@ def _evaluate_pointline(
     graded: bool,
 ) -> ResultRecord:
     """:func:`evaluate_one` for a curve or point ROI (status order in the module docstring)."""
-    thresholds = pointline.thresholds_for(config.config_source, roi, truth_kind)
+    thresholds = pointline_thresholds_for(config, roi, truth_kind)
     common = {
         "roi": roi,
         "thresholds": thresholds,
@@ -486,6 +504,12 @@ def verify_predictions(
     tool output).
     """
     config = config or load_config()
+    if config.convention != DEFAULT_CONVENTION:
+        raise ValueError(
+            f"convention {config.convention!r}: a bare ground-truth directory holds the "
+            f"{DEFAULT_CONVENTION} reference only; verify against the fixture "
+            "(--fixture) to grade another convention"
+        )
     rois = rois if rois is not None else list(CONFORMANCE_ROIS)
 
     pred_root = Path(predictions_dir)
@@ -568,17 +592,39 @@ def _select_bundles(manifest: FixtureManifest, bundles: list[str] | None) -> lis
     return [b for b in manifest.bundles if b in bundles]
 
 
+def _truth_under(roi: str, entry, convention: str) -> tuple[str | None, str | None]:
+    """``(path, sha256)`` of ``roi``'s ground truth under ``convention``.
+
+    Curve and point ROIs have one truth whatever the convention. A binary-mask
+    ROI with no reference for a non-default convention raises ``ValueError``.
+    """
+    if entry.truth_kind != "binary_mask" or entry.truth_path is None:
+        return entry.truth_path, entry.truth_sha256
+    path, sha = entry.truth_for(convention)
+    if path is None:
+        raise ValueError(
+            f"this fixture has no {convention!r} reference for {roi!r} (it records none in "
+            "manifest.json; fixtures written before boundary conventions existed hold the "
+            f"{DEFAULT_CONVENTION} reference only). Re-run `rtmask-conformance generate` "
+            "to rebuild the fixture."
+        )
+    return path, sha
+
+
 def check_fixture_integrity(
     fixture_dir: str | Path,
     manifest: FixtureManifest | None = None,
     *,
     bundles: list[str] | None = None,
+    convention: str = DEFAULT_CONVENTION,
 ) -> FixtureManifest:
-    """Check every ground-truth file of the selected bundles against the manifest.
+    """Check the ground truth of the selected bundles against the manifest.
 
-    Returns the manifest. Raises ``FileNotFoundError`` for a missing truth file
-    and :class:`FixtureIntegrityError` for a hash mismatch or a truth file the
-    manifest records without a hash.
+    Binary-mask ROIs are checked on their reference under ``convention``.
+    Returns the manifest. Raises ``FileNotFoundError`` for a missing truth file,
+    :class:`FixtureIntegrityError` for a hash mismatch or a truth file the
+    manifest records without a hash, and ``ValueError`` when the fixture has
+    no reference for ``convention``.
     """
     root = Path(fixture_dir)
     manifest = manifest or read_manifest(root)
@@ -586,22 +632,23 @@ def check_fixture_integrity(
     for roi, entry in manifest.rois.items():
         if entry.bundle not in selected or entry.truth_path is None:
             continue
-        path = root / entry.truth_path
+        truth_path, truth_sha256 = _truth_under(roi, entry, convention)
+        path = root / truth_path
         if not path.is_file():
             raise FileNotFoundError(
                 f"Ground truth for {roi!r} not found at {path}. "
                 "Re-run `rtmask-conformance generate` to rebuild the fixture."
             )
-        if entry.truth_sha256 is None:
+        if truth_sha256 is None:
             raise FixtureIntegrityError(
                 f"{path}: manifest records no SHA-256 for {roi!r}. "
                 "Re-run `rtmask-conformance generate` to rebuild the fixture."
             )
         actual = _sha256(path)
-        if actual != entry.truth_sha256:
+        if actual != truth_sha256:
             raise FixtureIntegrityError(
                 f"{path}: SHA-256 {actual} does not match the manifest "
-                f"({entry.truth_sha256}); the ground truth changed after generation. "
+                f"({truth_sha256}); the ground truth changed after generation. "
                 "Re-run `rtmask-conformance generate` to rebuild the fixture."
             )
     return manifest
@@ -628,6 +675,7 @@ def verify_fixture(
     config: ConformanceConfig | None = None,
     *,
     bundles: list[str] | None = None,
+    convention: str | None = None,
 ) -> Report:
     """Score ``predictions_dir`` against the fixture at ``fixture_dir``.
 
@@ -639,8 +687,15 @@ def verify_fixture(
     the verifier can grade (binary mask, curve or points), and skipped
     otherwise. A fixture written by a different
     package version is scored, with a warning.
+
+    ``convention`` (one of :data:`~rtmask_conformance.thresholds.CONVENTIONS`)
+    overrides the config's ``claims.convention``: binary-mask ROIs are scored
+    against that convention's reference with its thresholds, and the report's
+    ``claims`` block records it.
     """
     config = config or load_config()
+    if convention is not None:
+        config = config.with_convention(convention)
     fixture_root = Path(fixture_dir)
     pred_root = Path(predictions_dir)
     if not fixture_root.is_dir():
@@ -656,15 +711,28 @@ def verify_fixture(
 
     manifest = read_manifest(fixture_root)
     selected = _select_bundles(manifest, bundles)
-    check_fixture_integrity(fixture_root, manifest, bundles=selected)
+    check_fixture_integrity(fixture_root, manifest, bundles=selected, convention=config.convention)
     if manifest.package_version != __version__:
         warnings.warn(
             f"fixture was generated by rtmask-conformance {manifest.package_version}; "
             f"verifying with {__version__}. Regenerate the fixture if results look off.",
             stacklevel=2,
         )
+    if (
+        config.convention == "pv_gt_0"
+        and manifest.n_quadrature != CONVENTION_CALIBRATION_N_QUADRATURE
+    ):
+        warnings.warn(
+            f"fixture was generated with n_quadrature={manifest.n_quadrature}; the pv_gt_0 "
+            f"reference depends on it and its thresholds were calibrated at "
+            f"{CONVENTION_CALIBRATION_N_QUADRATURE}. Regenerate the fixture with the default "
+            "quadrature for a pv_gt_0 verdict.",
+            stacklevel=2,
+        )
 
-    to_score = fixture_targets(fixture_root, manifest, bundles=selected)
+    to_score = fixture_targets(
+        fixture_root, manifest, bundles=selected, convention=config.convention
+    )
     return _score(pred_root, to_score, config, fixture_summary(fixture_root, manifest, selected))
 
 
@@ -699,14 +767,16 @@ def fixture_targets(
     manifest: FixtureManifest,
     *,
     bundles: list[str] | None = None,
+    convention: str = DEFAULT_CONVENTION,
 ) -> list[RoiTarget]:
     """The ROIs ``verify --fixture`` scores, in manifest order.
 
     Every ROI of the selected ``bundles`` (default: all) with a ground truth
     the verifier can grade (:data:`SCORABLE_TRUTH_KINDS`), graded or not. An
     ungraded ROI without one is skipped; a graded ROI without one raises
-    ``NotImplementedError`` (no grader yet). The pytest harness parametrizes
-    over the same list.
+    ``NotImplementedError`` (no grader yet). A binary-mask ROI's ground truth
+    is its reference under ``convention`` (``ValueError`` if the fixture has
+    none). The pytest harness parametrizes over the same list.
     """
     root = Path(fixture_dir)
     selected = _select_bundles(manifest, bundles)
@@ -721,9 +791,10 @@ def fixture_targets(
             raise NotImplementedError(
                 f"{roi}: no grader for truth_kind {entry.truth_kind!r} in this version"
             )
+        truth_path, _ = _truth_under(roi, entry, convention)
         targets.append(RoiTarget(
             roi,
-            root / entry.truth_path,
+            root / truth_path,
             geometric_type=entry.geometric_type,
             truth_kind=entry.truth_kind,
             graded=entry.graded,

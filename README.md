@@ -179,6 +179,37 @@ differs from the ground-truth NIfTI by more than 1e-4, the ROI is flagged
 `GEOMETRY_MISMATCH` rather than scored — most third-party tool bugs are geometry, not
 voxel labeling, and surfacing them separately is more diagnostic.
 
+### Boundary conventions
+
+A contour does not say which boundary voxels belong to the structure, so a binary mask
+always encodes a rule for them, its boundary convention. The suite knows three, all valid
+discretisations of the same solid: `pv_ge_0.5` (a voxel is in when at least half of it
+lies inside; the default), `pv_gt_0` (any part of it lies inside) and `centre_in` (its
+centre lies inside, the rule of a scan-line fill). The fixture ships one reference per
+convention for every closed ROI, `groundtruth/` (`pv_ge_0.5`), `groundtruth_pv_gt0/` and
+`groundtruth_centre_in/`, plus the partial-volume field they come from,
+`groundtruth_pv/<roi>.nii.gz` (float32, the fraction of each voxel inside the solid);
+`manifest.json` records each with its SHA-256. A tool declares its convention as
+`claims.convention` in its threshold YAML, or with `verify --convention`, which overrides
+the YAML; it is then graded against that convention's reference with that convention's
+thresholds, and the report records the convention. A `PASS` therefore means "conforms
+under the declared convention", not "agrees with the default rule". A tool that declares
+nothing is graded under `pv_ge_0.5`, exactly as before. Curve and point ROIs have no
+convention and are graded the same way under all three.
+
+The shipped thresholds of `pv_gt_0` and `centre_in` are those of `pv_ge_0.5`, except
+the torus's volume ceiling under `pv_gt_0` (5.5 %): a converter that marks every voxel
+its contour touches on each slice cannot see where the solid bulges between slices, and
+reads 3.4 % low on the torus. `tools/calibrate_conventions.py` reproduces the
+calibration from a generated fixture. With these thresholds a `pv_gt_0` mask fails
+under the other two conventions on every curved primitive and the other two fail under
+`pv_gt_0`; a `pv_ge_0.5` mask and a `centre_in` mask, which differ by at most 0.5 % in
+volume, pass each other's thresholds, so the gate does not tell those two apart. On the
+cube, whose faces lie on voxel boundaries, the three references are identical. The
+`pv_gt_0` reference depends on the quadrature (`generate --n-quadrature`): a coarser one
+misses small overlaps, so grade `pv_gt_0` on a fixture generated at the default (the
+verifier warns otherwise).
+
 ## Install
 
 ```
@@ -211,12 +242,15 @@ rtmask-conformance verify --predictions ./predictions --fixture ./fixture
 `--fixture` reads `./fixture/manifest.json`, checks every ground-truth file against the
 SHA-256 recorded at generation, scores the manifest's graded ROIs, and records which
 fixture it scored (package version, git SHA, quadrature, bundles) in the report.
-`--bundle <name>` (repeatable) restricts scoring to those bundles. The v0.1 form,
-`--groundtruth ./fixture/groundtruth`, still works: no manifest, no hash check.
+`--bundle <name>` (repeatable) restricts scoring to those bundles.
+`--convention {pv_ge_0.5,pv_gt_0,centre_in}` grades the closed ROIs under that boundary
+convention (see [Boundary conventions](#boundary-conventions)). The v0.1 form,
+`--groundtruth ./fixture/groundtruth`, still works: no manifest, no hash check, and the
+`pv_ge_0.5` reference only.
 
 Exit codes: `0` no ROI failed, `1` any ROI is `FAIL`, `MISSING` or `GEOMETRY_MISMATCH`,
-`2` usage error (including ground truth that fails its manifest hash check, or a malformed
-`--config`). `--report-only` forces `0`. Each ROI gets one of six statuses:
+`2` usage error (including ground truth that fails its manifest hash check, a malformed
+`--config`, or a fixture without the declared convention's reference). `--report-only` forces `0`. Each ROI gets one of six statuses:
 
 | Status | Meaning | Fails the run? |
 |---|---|---|
@@ -239,6 +273,7 @@ your own YAML and pass `--config conformance.yaml`:
 schema_version: 2
 claims:
   geometric_types: [CLOSED_PLANAR, OPEN_PLANAR]   # the contour types your tool supports
+  convention: centre_in                           # pv_ge_0.5 (default), pv_gt_0 or centre_in
 report_only: [torus]                              # ROI names or geometric types
 defaults:
   dice: 0.95
@@ -249,7 +284,21 @@ defaults:
 primitives:
   torus:
     dice: 0.90        # relax for tools known to struggle with toroidal cross-sections
+conventions:          # closed ROIs graded under pv_gt_0 or centre_in
+  centre_in:
+    primitives:
+      torus:
+        dice: 0.90
 ```
+
+`defaults` and `primitives` are the `pv_ge_0.5` thresholds. Under `pv_gt_0` or
+`centre_in` a closed ROI's thresholds resolve, each step a shallow merge over the one
+before: `defaults` ← `primitives.<roi>` ← `conventions.<convention>.defaults` ←
+`conventions.<convention>.primitives.<roi>`. A convention block names only what differs
+from `pv_ge_0.5`, and what it names wins, so to change a metric the shipped convention
+block sets, set it in your own `conventions:` block. Your `conventions:` blocks merge over
+the shipped ones the same way your `defaults` and `primitives` do. Curve and point ROIs
+take their thresholds from the `pointline:` block whatever the convention.
 
 Per-primitive overrides shallow-merge over `defaults` and may name any ROI. `claims:`
 lists the Contour Geometric Type values your tool supports (`CLOSED_PLANAR`,
@@ -259,8 +308,10 @@ for which your tool writes nothing, or an empty mask, is `UNSUPPORTED_TYPE` rath
 default claims all five. `report_only:` lists ROI names or geometric types to score and
 report without grading; your list adds to the shipped one, while your `claims:` replace
 the shipped claims. Every verify report records the claims and the `report_only` list it
-used. A `schema_version: 1` file still loads and claims every type; `claims:` and
-`report_only:` need `schema_version: 2`, and an unknown `schema_version` is rejected.
+used; the claims include `convention` only when you declared one (in `claims:` or with
+`--convention`), so a report that declares none is unchanged. A `schema_version: 1` file
+still loads and claims every type under `pv_ge_0.5`; `claims:`, `report_only:` and
+`conventions:` need `schema_version: 2`, and an unknown `schema_version` is rejected.
 
 ## Planning systems: volume-only mode
 

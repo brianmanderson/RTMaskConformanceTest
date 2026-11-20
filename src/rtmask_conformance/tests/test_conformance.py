@@ -8,7 +8,8 @@ Run with:
 
 With a fixture, the ROI list is the one ``verify --fixture`` scores (every
 manifest ROI with a binary-mask ground truth, graded or not) and each ROI's
-ground truth is the manifest's ``truth_path``. Without one (the v0.1 form,
+ground truth is its reference under the config's ``claims.convention``
+(the manifest's ``truth_path`` for the default ``pv_ge_0.5``). Without one (the v0.1 form,
 ``RTMASK_CONFORMANCE_GROUNDTRUTH=./fixture/groundtruth``), the ROI list is
 ``CONFORMANCE_ROIS``.
 
@@ -65,7 +66,10 @@ def test_conformance(
 ):
     if fixture_manifest is not None:
         fixture_dir, manifest = fixture_manifest
-        target = {t.roi: t for t in fixture_targets(fixture_dir, manifest)}[roi]
+        targets = fixture_targets(
+            fixture_dir, manifest, convention=conformance_config.convention
+        )
+        target = {t.roi: t for t in targets}[roi]
         gt_path = target.gt_path
         kwargs = {"geometric_type": target.geometric_type, "truth_kind": target.truth_kind,
                   "graded": target.graded}
